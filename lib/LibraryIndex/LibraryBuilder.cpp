@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -214,6 +215,19 @@ bool readBookCompleted(const std::string& cachePath) {
     return buf[11] != 0;
   }
   return false;
+}
+
+// True when a string is just a number ("2", "2.0", " 3 "). Exporters sometimes
+// write a book's series INDEX into its series NAME field; real series names are
+// not bare numbers, so such values are treated as "no series".
+bool isNumericOnly(const std::string& s) {
+  if (s.empty()) return false;
+  const char* start = s.c_str();
+  char* end = nullptr;
+  (void)strtof(start, &end);
+  if (end == start) return false;
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
+  return *end == '\0';
 }
 
 // Counts the book files a build would index, using the same filters as the walk
@@ -441,6 +455,13 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   if (!author.empty() && fold(author) == "unknown") {
     author.clear();
     authorFromBook = false;
+  }
+
+  // Drop a series name that is just a number (a mis-scraped series index). On
+  // reuse the record already holds the old key, so reset it to "no series".
+  if (!series.empty() && isNumericOnly(series)) {
+    series.clear();
+    memset(entry.record.seriesKey, 0xFF, sizeof(entry.record.seriesKey));
   }
 
   if (titleFromBook || authorFromBook) st.enriched++;
