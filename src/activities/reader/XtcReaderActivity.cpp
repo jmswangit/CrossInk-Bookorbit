@@ -11,6 +11,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Memory.h>
 
 #include <algorithm>
@@ -785,6 +786,7 @@ void XtcReaderActivity::setBookCompleted(const bool isCompleted) {
 
   stats.save(xtc->getCachePath());
   globalStats.save();
+  library::markLibraryIndexDirty();
 }
 
 float XtcReaderActivity::getCurrentBookProgressPercent() const {

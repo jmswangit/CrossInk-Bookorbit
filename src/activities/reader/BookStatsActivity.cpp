@@ -1,6 +1,7 @@
 #include "BookStatsActivity.h"
 
 #include <I18n.h>
+#include <LibraryBuilder.h>
 
 #include "BookStatsView.h"
 #include "MappedInputManager.h"
@@ -146,6 +147,7 @@ void BookStatsActivity::applyCompletedState(const bool completed) {
   } else if (globalStats.completedBooks > 0) {
     globalStats.completedBooks--;
   }
+  library::markLibraryIndexDirty();
 }
 
 void BookStatsActivity::normalizeEditedDates(const bool editedFinishedField) {

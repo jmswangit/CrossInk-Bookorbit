@@ -4,6 +4,7 @@
 #include <ESPmDNS.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Memory.h>
 #include <WiFi.h>
 
@@ -97,6 +98,8 @@ void CrossPointWebServerActivity::onEnter() {
 
 void CrossPointWebServerActivity::onExit() {
   Activity::onExit();
+  // Uploads, deletes, renames and WebDAV writes may have changed the card.
+  library::markLibraryIndexDirty();
 
   state = WebServerActivityState::SHUTTING_DOWN;
 

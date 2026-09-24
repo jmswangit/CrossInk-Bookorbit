@@ -6,6 +6,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <Xtc.h>
 
@@ -196,6 +197,7 @@ bool toggleBookCompleted(const std::string& fullPath, const std::string& display
 
   stats.save(cachePath);
   globalStats.save();
+  library::markLibraryIndexDirty();
 
   if (SETTINGS.removeReadBooksFromRecents) {
     if (completed) {
@@ -222,6 +224,7 @@ bool toggleBookCompleted(const std::string& fullPath, const std::string& display
 
     BookMoveUtils::migrateMovedEpubState(fullPath, dstPath, oldCachePath, title, author,
                                          !SETTINGS.removeReadBooksFromRecents);
+    library::markLibraryIndexDirty();
   }
 
   return true;

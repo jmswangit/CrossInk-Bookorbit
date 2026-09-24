@@ -132,6 +132,9 @@ class HalFile : public Print {
   bool sync();
   bool rename(const char* newPath);
   bool isDirectory() const;
+  // FAT modification timestamp packed as (date << 16) | time, or 0 when the
+  // entry has no valid date. Used by the library index for its "recent" order.
+  uint32_t modificationTime();
   void rewindDirectory();
   bool close();
   HalFile openNextFile();

@@ -4,6 +4,7 @@
 #include <FreeInkUIIcon.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <LibraryBuilder.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
@@ -432,6 +433,7 @@ void FileBrowserActivity::promptDeleteFile(const std::string& fullPath, const st
       return;
     }
     ImageFolderIndex::invalidateForPath(fullPath.c_str());
+    library::markLibraryIndexDirty();
 
     if (isPinnedSleepFavorite(fullPath)) {
       unpinSleepFavorite();
@@ -475,6 +477,7 @@ void FileBrowserActivity::promptDeleteDirectory(const std::string& fullPath, con
       return;
     }
     ImageFolderIndex::invalidateForPath(dirPath.c_str());
+    library::markLibraryIndexDirty();
 
     for (const auto& metadataPath : metadataPaths) {
       BookActions::clearFileMetadata(metadataPath);

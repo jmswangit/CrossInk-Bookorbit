@@ -3,6 +3,7 @@
 #include <ESPmDNS.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 
@@ -54,6 +55,8 @@ void CalibreConnectActivity::onEnter() {
 
 void CalibreConnectActivity::onExit() {
   Activity::onExit();
+  // Books may have been received; stale the library index for a rebuild.
+  library::markLibraryIndexDirty();
 
   MDNS.end();
 

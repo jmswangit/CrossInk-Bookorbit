@@ -18,6 +18,7 @@ class ContentOpfParser final : public Print {
     IN_BOOK_TITLE,
     IN_BOOK_AUTHOR,
     IN_BOOK_LANGUAGE,
+    IN_BOOK_SERIES,  // EPUB3 <meta property="belongs-to-collection"> text
     IN_MANIFEST,
     IN_SPINE,
     IN_GUIDE,
@@ -36,6 +37,12 @@ class ContentOpfParser final : public Print {
   bool lowMemoryFailure = false;
   bool hasExplicitStartReference = false;
   bool collectCssFiles = true;
+  // Metadata-only reads stop after </metadata> (the library index needs title,
+  // author and series but nothing from manifest/spine/guide). The short write
+  // in write() makes ZipFile::readFileToStream() stop decompressing early.
+  bool metadataOnly = false;
+  bool metadataComplete = false;
+  std::string collectionText;  // EPUB3 belongs-to-collection element text
 
   // Index for compact idref->href lookup. The temp manifest rows retain the
   // full ID for collision-safe matching without retaining IDs in heap memory.
@@ -91,6 +98,8 @@ class ContentOpfParser final : public Print {
   std::string title;
   std::string author;
   std::string language;
+  std::string series;       // calibre:series or EPUB3 belongs-to-collection
+  float seriesIndex = 0.0f;  // calibre:series_index or EPUB3 group-position
   std::string tocNcxPath;
   std::string tocNavPath;        // EPUB 3 nav document path
   std::string guideTocPageHref;  // EPUB 2 guide TOC page, if declared
@@ -100,12 +109,14 @@ class ContentOpfParser final : public Print {
   std::vector<std::string> cssFiles;  // CSS stylesheet paths
 
   explicit ContentOpfParser(const std::string& cachePath, const std::string& baseContentPath, const size_t xmlSize,
-                            BookMetadataCache* cache, const bool collectCssFiles = true)
+                            BookMetadataCache* cache, const bool collectCssFiles = true,
+                            const bool metadataOnly = false)
       : cachePath(cachePath),
         baseContentPath(baseContentPath),
         remainingSize(xmlSize),
         cache(cache),
-        collectCssFiles(collectCssFiles) {}
+        collectCssFiles(collectCssFiles),
+        metadataOnly(metadataOnly) {}
   ~ContentOpfParser() override;
 
   bool setup();

@@ -63,6 +63,7 @@ enum class HomeMenuAction {
   BrowseFiles,
   ContinueReading,
   RecentBooks,
+  Library,
   OpdsBrowser,
   BookOrbitCatalog,
   ReadingStats,
@@ -311,6 +312,7 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
                          bool hasClippings) {
   items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
+  items.push({tr(STR_MENU_LIBRARY), BookOpenText, HomeMenuAction::Library});
 
   if (hasOpdsServers) {
     items.push({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
@@ -318,15 +320,17 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
   if (BOOKORBIT_STORE.hasCredentials()) {
     items.push({tr(STR_BOOKORBIT), Library, HomeMenuAction::BookOrbitCatalog});
   }
-  if (hasReadingStats) {
-    items.push({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
-  }
   if (hasBookmarks || hasClippings) {
     items.push({savedItemsLabel(hasBookmarks, hasClippings), BookmarkIcon, HomeMenuAction::Bookmarks});
   }
 
   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
   items.push({tr(STR_SETTINGS_TITLE), Settings, HomeMenuAction::Settings});
+  // Reading Stats is deliberately last: when the menu overflows to a second
+  // page it is the item that moves, keeping Settings on the first page.
+  if (hasReadingStats) {
+    items.push({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
+  }
 }
 
 HomeMenuEntries buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
@@ -338,6 +342,7 @@ HomeMenuEntries buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bo
 HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
   HomeMenuEntries items;
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
+  items.push({tr(STR_MENU_LIBRARY), BookOpenText, HomeMenuAction::Library});
 
   if (hasOpdsServers) {
     items.push({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
@@ -348,11 +353,12 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
   if (hasBookmarks || hasClippings) {
     items.push({savedItemsLabel(hasBookmarks, hasClippings), BookmarkIcon, HomeMenuAction::Bookmarks});
   }
+
+  items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
+  // Reading Stats last so it is the item that overflows to a second page.
   if (hasReadingStats) {
     items.push({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
   }
-
-  items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
   return items;
 }
 
@@ -1617,6 +1623,9 @@ void HomeActivity::loop() {
           case HomeMenuAction::RecentBooks:
             onRecentsOpen();
             break;
+          case HomeMenuAction::Library:
+            onLibraryOpen();
+            break;
           case HomeMenuAction::OpdsBrowser:
             onOpdsBrowserOpen();
             break;
@@ -1864,6 +1873,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuAction::RecentBooks:
         onRecentsOpen();
+        break;
+      case HomeMenuAction::Library:
+        onLibraryOpen();
         break;
       case HomeMenuAction::OpdsBrowser:
         onOpdsBrowserOpen();
@@ -2460,6 +2472,8 @@ void HomeActivity::onSelectBook(const std::string& path) {
 }
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
+
+void HomeActivity::onLibraryOpen() { activityManager.goToLibrary(); }
 
 void HomeActivity::onContinueReading() {
   if (recentBooks.empty()) return;

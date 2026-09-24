@@ -553,7 +553,10 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   return ctx->error ? 0 : 1;
 }
 
-// Scans JPEG markers for SOF2 (progressive DCT) — JPEGDEC only handles baseline/sequential.
+// Scans JPEG markers for SOF2 (progressive DCT) — JPEGDEC only handles
+// baseline/sequential at full resolution. (Baseline 4:4:4 also fails in the
+// grayscale MCU_SKIP path — JPEG_DECODE_ERROR — but decoding it at 1/8 scale
+// does not help, so it is not special-cased here.)
 static bool isProgressiveJpeg(FsFile& file) {
   file.seek(0);
   uint8_t buf[2];

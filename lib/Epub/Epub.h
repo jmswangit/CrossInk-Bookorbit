@@ -132,6 +132,9 @@ class Epub {
   const std::string& getTitle() const;
   const std::string& getAuthor() const;
   const std::string& getLanguage() const;
+  // Parses only the OPF <metadata> block and returns title/author/series
+  // without building a book cache. Cheap enough to run across a whole SD card.
+  bool loadMetadata(std::string& title, std::string& author, std::string& series, float& seriesIndex);
   // True when parsed EPUB metadata identifies a cover image. Requires load().
   bool hasCoverImage() const;
   std::string getCoverBmpPath(bool cropped = false, bool imageLevels = false) const;

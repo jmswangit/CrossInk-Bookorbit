@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <OpdsStream.h>
@@ -98,6 +99,8 @@ void OpdsBookBrowserActivity::onEnter() {
 
 void OpdsBookBrowserActivity::onExit() {
   Activity::onExit();
+  // Downloads may have added books; stale the library index for a rebuild.
+  library::markLibraryIndexDirty();
   clearEntries();
   entries.reset();
   navigationHistory.clear();

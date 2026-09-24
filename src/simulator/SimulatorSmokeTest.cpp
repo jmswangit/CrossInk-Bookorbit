@@ -32,6 +32,9 @@ namespace {
 enum class SmokeStep : uint8_t {
   Start,
   Home,
+  Library,
+  LibraryInput,
+  FileBrowserLaunch,
   FileBrowser,
   FileBrowserSettings,
   RecentBooks,
@@ -302,6 +305,20 @@ class SimulatorSmokeTest {
         break;
 
       case SmokeStep::Home:
+        activityManager.goToLibrary();
+        queueStep("Library", SmokeStep::Library);
+        break;
+
+      case SmokeStep::Library:
+        buildLibraryInputScript();
+        step = SmokeStep::LibraryInput;
+        break;
+
+      case SmokeStep::LibraryInput:
+        runReaderInputScript();
+        break;
+
+      case SmokeStep::FileBrowserLaunch:
         activityManager.goToFileBrowser("/books");
         queueStep("File Browser", SmokeStep::FileBrowser);
         break;
@@ -713,6 +730,55 @@ class SimulatorSmokeTest {
     inputScript.push_back(render("Reader after closing Reader Menu", 4));
 
     LOG_INF("SMOKE", "Running reader input script with %d page turn(s)", turns);
+  }
+
+  // Walks the Library tabs: Recent -> Title (cover grid) -> Author -> Series.
+  // The Title step is what exercises cover generation and the grid renderer.
+  void buildLibraryInputScript() {
+    inputScript.clear();
+    scriptIndex = 0;
+    inputCompletionStep = SmokeStep::FileBrowserLaunch;
+
+    inputScript.push_back(render("Library Recent", 8));
+    addTap(MappedInputManager::Button::Right);
+    inputScript.push_back(render("Library Title", 12));
+#if CROSSINK_APP_CAP_TOUCH
+    {
+      const int w = renderer.getScreenWidth();
+      const int h = renderer.getScreenHeight();
+      // Vertical swipe pages the cover grid.
+      inputScript.push_back(touchDown(w / 2, h * 3 / 4));
+      inputScript.push_back(touchMove(w / 2, h / 4));
+      inputScript.push_back(touchRelease(w / 2, h / 4));
+      inputScript.push_back(render("Library Title paged by swipe", 8));
+    }
+#endif
+    addTap(MappedInputManager::Button::Right);
+    inputScript.push_back(render("Library Author", 6));
+    // Drill into the first author group to exercise its 2x2 cover grid.
+    addTap(MappedInputManager::Button::Confirm);
+    inputScript.push_back(render("Library Author grid", 12));
+    addTap(MappedInputManager::Button::Back);
+    inputScript.push_back(render("Library Author list", 4));
+#if CROSSINK_APP_CAP_TOUCH
+    {
+      const int w = renderer.getScreenWidth();
+      const int h = renderer.getScreenHeight();
+      // Horizontal swipe switches tabs (Author -> Series).
+      inputScript.push_back(touchDown(w * 3 / 4, h / 2));
+      inputScript.push_back(touchMove(w / 4, h / 2));
+      inputScript.push_back(touchRelease(w / 4, h / 2));
+      inputScript.push_back(render("Library Series by swipe", 6));
+    }
+#else
+    addTap(MappedInputManager::Button::Right);
+    inputScript.push_back(render("Library Series", 6));
+#endif
+    // Drill into the first series group to exercise the 2x2 cover grid.
+    addTap(MappedInputManager::Button::Confirm);
+    inputScript.push_back(render("Library Series grid", 12));
+    addTap(MappedInputManager::Button::Back);
+    inputScript.push_back(render("Library Series list", 4));
   }
 
 #if CROSSINK_APP_CAP_TOUCH

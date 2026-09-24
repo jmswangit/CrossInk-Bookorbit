@@ -18,6 +18,12 @@ void utf8TruncateChars(std::string& str, size_t numChars);
 // stored in NFD (e.g. some EPUB chapter titles) otherwise renders broken.
 std::string utf8ComposeNfc(const std::string& in);
 
+// The base letter a precomposed codepoint decomposes to, or 0 when there is
+// none ("é" -> "e", but "ø" -> 0: a letter in its own right, not o-with-stroke).
+// A linear scan of the shared composition table; used by library search and
+// sort to fold accented letters onto their ASCII base.
+uint32_t utf8DecomposedBase(uint32_t cp);
+
 // Returns true when text contains at least one Unicode letter/number-like
 // codepoint that can be sent to dictionary lookup. Punctuation, symbols,
 // whitespace, and combining marks do not count by themselves.

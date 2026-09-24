@@ -6,6 +6,7 @@
 #include <XmlParserUtils.h>
 
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 #include "Epub/BookMetadataCache.h"
@@ -138,7 +139,9 @@ bool ContentOpfParser::findItemHref(const std::string& idref, std::string& href)
 }
 
 bool ContentOpfParser::setup() {
-  if (!itemIndexArena.init(ITEM_INDEX_ARENA_SLAB_BYTES)) {
+  // The manifest index (and its arena) is only needed for a full parse; a
+  // metadata-only read stops before <manifest>, so skip the allocation.
+  if (!metadataOnly && !itemIndexArena.init(ITEM_INDEX_ARENA_SLAB_BYTES)) {
     LOG_ERR("COF", "Failed to allocate manifest index arena (%u bytes)",
             static_cast<unsigned>(ITEM_INDEX_ARENA_SLAB_BYTES));
     lowMemoryFailure = true;
@@ -173,6 +176,8 @@ size_t ContentOpfParser::write(const uint8_t data) { return write(&data, 1); }
 
 size_t ContentOpfParser::write(const uint8_t* buffer, const size_t size) {
   if (!parser || parseFailed) return 0;
+  // Metadata already collected: a short write tells ZipFile to stop reading.
+  if (metadataOnly && metadataComplete) return size > 0 ? size - 1 : 0;
 
   const uint8_t* currentBufferPos = buffer;
   auto remainingInBuffer = size;
@@ -203,6 +208,8 @@ size_t ContentOpfParser::write(const uint8_t* buffer, const size_t size) {
     currentBufferPos += toRead;
     remainingInBuffer -= toRead;
     remainingSize -= toRead;
+
+    if (metadataOnly && metadataComplete) return size > 0 ? size - 1 : 0;
   }
 
   return size;
@@ -211,6 +218,8 @@ size_t ContentOpfParser::write(const uint8_t* buffer, const size_t size) {
 void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<ContentOpfParser*>(userData);
   (void)atts;
+
+  if (self->metadataOnly && self->metadataComplete) return;
 
   if (self->state == START && (strcmp(name, "package") == 0 || strcmp(name, "opf:package") == 0)) {
     self->state = IN_PACKAGE;
@@ -241,6 +250,10 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_PACKAGE && (strcmp(name, "manifest") == 0 || strcmp(name, "opf:manifest") == 0)) {
+    if (self->metadataOnly) {
+      self->metadataComplete = true;
+      return;
+    }
     self->state = IN_MANIFEST;
     if (!Storage.openFileForWrite("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
       LOG_ERR("COF", "Couldn't open temp items file for writing. This is probably going to be a fatal error.");
@@ -249,6 +262,10 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_PACKAGE && (strcmp(name, "spine") == 0 || strcmp(name, "opf:spine") == 0)) {
+    if (self->metadataOnly) {
+      self->metadataComplete = true;
+      return;
+    }
     self->state = IN_SPINE;
     if (!Storage.openFileForRead("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
       LOG_ERR("COF", "Couldn't open temp items file for reading. This is probably going to be a fatal error.");
@@ -262,6 +279,10 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_PACKAGE && (strcmp(name, "guide") == 0 || strcmp(name, "opf:guide") == 0)) {
+    if (self->metadataOnly) {
+      self->metadataComplete = true;
+      return;
+    }
     self->state = IN_GUIDE;
     // TODO Remove print
     if (!Storage.openFileForRead("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
@@ -271,19 +292,41 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_METADATA && (strcmp(name, "meta") == 0 || strcmp(name, "opf:meta") == 0)) {
-    bool isCover = false;
-    std::string coverItemId;
+    const char* metaName = nullptr;
+    const char* metaProperty = nullptr;
+    const char* metaContent = nullptr;
 
     for (int i = 0; atts[i]; i += 2) {
-      if (strcmp(atts[i], "name") == 0 && strcmp(atts[i + 1], "cover") == 0) {
-        isCover = true;
+      if (strcmp(atts[i], "name") == 0) {
+        metaName = atts[i + 1];
+      } else if (strcmp(atts[i], "property") == 0) {
+        metaProperty = atts[i + 1];
       } else if (strcmp(atts[i], "content") == 0) {
-        coverItemId = atts[i + 1];
+        metaContent = atts[i + 1];
       }
     }
 
-    if (isCover) {
-      self->coverItemId = coverItemId;
+    // EPUB2 / Calibre metadata carries its value in the content attribute.
+    if (metaName != nullptr) {
+      if (strcmp(metaName, "cover") == 0) {
+        self->coverItemId = metaContent != nullptr ? metaContent : "";
+      } else if (strcmp(metaName, "calibre:series") == 0 && metaContent != nullptr) {
+        self->series = metaContent;
+      } else if (strcmp(metaName, "calibre:series_index") == 0 && metaContent != nullptr) {
+        self->seriesIndex = strtof(metaContent, nullptr);
+      }
+      return;
+    }
+
+    // EPUB3: the collection name is the element's text, captured below.
+    if (metaProperty != nullptr) {
+      if (strcmp(metaProperty, "belongs-to-collection") == 0) {
+        self->collectionText.clear();
+        self->state = IN_BOOK_SERIES;
+      } else if (strcmp(metaProperty, "group-position") == 0 && metaContent != nullptr) {
+        self->seriesIndex = strtof(metaContent, nullptr);
+      }
+      return;
     }
     return;
   }
@@ -438,6 +481,11 @@ void XMLCALL ContentOpfParser::characterData(void* userData, const XML_Char* s, 
     self->language.append(s, len);
     return;
   }
+
+  if (self->state == IN_BOOK_SERIES) {
+    self->collectionText.append(s, len);
+    return;
+  }
 }
 
 void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) {
@@ -477,8 +525,19 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
     return;
   }
 
+  if (self->state == IN_BOOK_SERIES && (strcmp(name, "meta") == 0 || strcmp(name, "opf:meta") == 0)) {
+    // Prefer an explicit calibre:series; fall back to the EPUB3 collection name.
+    if (self->series.empty() && !self->collectionText.empty()) {
+      self->series = self->collectionText;
+    }
+    self->collectionText.clear();
+    self->state = IN_METADATA;
+    return;
+  }
+
   if (self->state == IN_METADATA && (strcmp(name, "metadata") == 0 || strcmp(name, "opf:metadata") == 0)) {
     self->state = IN_PACKAGE;
+    self->metadataComplete = true;
     return;
   }
 

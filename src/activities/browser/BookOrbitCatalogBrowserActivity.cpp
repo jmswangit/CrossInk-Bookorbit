@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <WiFi.h>
 
@@ -163,6 +164,8 @@ void BookOrbitCatalogBrowserActivity::onEnter() {
 
 void BookOrbitCatalogBrowserActivity::onExit() {
   Activity::onExit();
+  // Downloads may have added books; stale the library index for a rebuild.
+  library::markLibraryIndexDirty();
   entries.clear();
   BookOrbitDownloadIndex::unload();
 

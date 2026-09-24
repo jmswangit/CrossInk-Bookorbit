@@ -28,6 +28,7 @@
 #include "home/RecentBookProgress.h"
 #include "home/RecentBooksActivity.h"
 #include "home/RecentBooksGridActivity.h"
+#include "library/LibraryActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/NearbyBookTransferActivity.h"
 #include "network/NearbyStatsSyncActivity.h"
@@ -682,6 +683,10 @@ void ActivityManager::goToRecentBooks() {
   } else {
     replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput));
   }
+}
+
+void ActivityManager::goToLibrary() {
+  replaceActivity(std::make_unique<LibraryActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToBrowser() {

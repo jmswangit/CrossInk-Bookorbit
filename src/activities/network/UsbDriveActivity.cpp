@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -49,6 +50,9 @@ void UsbDriveActivity::onExit() {
   if (!restartRequested) Storage.endUsbDrive();
 #endif
   Activity::onExit();
+  // The computer may have added or removed books while the card was exposed;
+  // the firmware cannot see those writes, so always stale the index on exit.
+  library::markLibraryIndexDirty();
 }
 
 void UsbDriveActivity::loop() {

@@ -4,6 +4,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <Memory.h>
 
@@ -138,6 +139,8 @@ void NearbyBookTransferActivity::onExit() {
   receiveFile_.close();
   stopRadio();
   Activity::onExit();
+  // A received book may have been added; stale the library index.
+  library::markLibraryIndexDirty();
 }
 
 bool NearbyBookTransferActivity::skipLoopDelay() {

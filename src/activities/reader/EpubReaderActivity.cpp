@@ -8,6 +8,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <LibraryBuilder.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -1471,6 +1472,8 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
 
   BookMoveUtils::migrateMovedEpubState(srcPath, dstPath, oldCachePath, title, author,
                                        !SETTINGS.removeReadBooksFromRecents);
+  // The book's path changed; stale the library index.
+  library::markLibraryIndexDirty();
 }
 
 }  // namespace
@@ -5421,6 +5424,8 @@ void EpubReaderActivity::setBookCompleted(bool isCompleted) {
   refreshCachedTimeLeftEstimate();
   stats.save(epub->getCachePath());
   globalStats.save();
+  // Finished state is part of the library index; stale it for a rebuild.
+  library::markLibraryIndexDirty();
 }
 
 void EpubReaderActivity::showCompletedFeedback(bool isCompleted) {
