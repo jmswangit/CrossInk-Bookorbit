@@ -455,7 +455,8 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   // Stats can change without the book file changing, so this is read every
   // build rather than only for newly seen books.
   const bool completed = extractionExpected && readBookCompleted(Epub::cachePathForFilePath(fullPath, CACHE_DIR));
-  entry.record.flags = completed ? CLIX_BOOK_FLAG_COMPLETED : 0;
+  entry.record.flags =
+      (completed ? CLIX_BOOK_FLAG_COMPLETED : 0) | (FsHelpers::hasEpubExtension(name) ? CLIX_BOOK_FLAG_EPUB : 0);
 
   // Reuse the arrival order this book already had. Without this every rebuild
   // renumbers the whole library in disk-walk order, and "Recently added" silently

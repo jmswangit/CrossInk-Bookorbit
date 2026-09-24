@@ -31,7 +31,8 @@ class LibraryActivity final : public Activity {
 
   enum class Tab : uint8_t { Recent, Title, Author, Series };
   enum class Mode : uint8_t { List, Grid, Groups };
-  enum class Filter : uint8_t { All, Unread, Finished };
+  // Combined status + format filter presets. Persisted across sessions.
+  enum class Filter : uint8_t { All, Unread, Finished, EpubAll, EpubUnread, EpubFinished };
 
   // One aggregated author / series, as a run of the active sort permutation.
   struct Group {
@@ -100,6 +101,11 @@ class LibraryActivity final : public Activity {
   void openSearch();
   void openFilterMenu();
   bool passesFilter(const library::ClixRecord& record) const;
+  void loadFilter();
+  void saveFilter() const;
+  // Generates cover thumbnails for every indexed book still missing them,
+  // updating the on-screen progress popup. Returns when the card is done.
+  void prefetchMissingCovers();
   void moveSelection(int index);
   void activateSelected();
   void goUp();
@@ -111,6 +117,7 @@ class LibraryActivity final : public Activity {
   int tabIndexFromPoint(int x, int y) const;
   int gridIndexFromPoint(int x, int y);
   void updateGridGeometry();
+  void coverSizeFor(int cols, int rows, int& outW, int& outH) const;
   int booksPerPage() const { return gridCols * gridRows; }
   void drawTabs() const;
   void drawGrid();

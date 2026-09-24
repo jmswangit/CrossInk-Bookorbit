@@ -28,7 +28,7 @@ namespace library {
 inline constexpr char CLIX_MAGIC[4] = {'C', 'L', 'X', '1'};
 // Bumping this is the whole migration: an index from an older version fails
 // validation and is rebuilt. No previous development format is accepted.
-inline constexpr uint8_t CLIX_FORMAT_VERSION = 4;
+inline constexpr uint8_t CLIX_FORMAT_VERSION = 5;
 
 // Bump when the fold, the article table, or a permutation's sort key changes.
 // Forces fold and ranks to be rebuilt while firstSeen values are preserved, so
@@ -75,6 +75,7 @@ enum ClixMetadataStatus : uint8_t {
 // Per-book flags carried in ClixRecord::flags.
 enum ClixBookFlags : uint8_t {
   CLIX_BOOK_FLAG_COMPLETED = 1 << 0,  // marked finished in the reader's stats
+  CLIX_BOOK_FLAG_EPUB = 1 << 1,       // .epub (vs txt/md/xtc)
 };
 
 #pragma pack(push, 1)

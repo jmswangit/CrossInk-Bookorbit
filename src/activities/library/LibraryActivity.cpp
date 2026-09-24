@@ -37,6 +37,7 @@ namespace fui = freeink::ui;
 
 namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
+constexpr char kFilterPath[] = "/.crosspoint/library.filter";
 constexpr unsigned long LONG_PRESS_MS = 1000;
 
 // Nudge the header search icon down so it sits optically centered in the band.
@@ -96,8 +97,17 @@ LibraryActivity::LibraryActivity(GfxRenderer& renderer, MappedInputManager& mapp
 void LibraryActivity::ensureIndex() {
   if (indexReady) return;
   if (!library::isLibraryIndexDirty() && index.open(library::libraryIndexPath())) {
-    indexReady = true;
-    return;
+    // The index can be stale because files were added by a source the activity
+    // hooks did not see (for example a local-network download). Compare the
+    // on-card book count and rebuild only when it actually changed.
+    const uint16_t current = library::countCardBooks("/");
+    if (current == index.bookCount()) {
+      indexReady = true;
+      return;
+    }
+    LOG_INF("LIBUI", "book count changed %u -> %u; rebuilding", static_cast<unsigned>(index.bookCount()),
+            static_cast<unsigned>(current));
+    index.close();
   }
   GUI.drawPopup(renderer, tr(STR_LIBRARY_BUILDING));
   renderer.displayBuffer();
@@ -107,6 +117,9 @@ void LibraryActivity::ensureIndex() {
     indexReady = true;
     LOG_INF("LIBUI", "library ready: %u books (%u parsed, %u reused)", static_cast<unsigned>(index.bookCount()),
             static_cast<unsigned>(stats.parsed), static_cast<unsigned>(stats.metadataReused));
+    // Only after a rebuild: fill in any covers the card is still missing, with
+    // the progress popup. On a plain reopen there is nothing new to do.
+    prefetchMissingCovers();
   } else {
     buildFailed = true;
     LOG_ERR("LIBUI", "library index unavailable");
@@ -155,33 +168,54 @@ void LibraryActivity::buildSearch() {
 }
 
 bool LibraryActivity::passesFilter(const library::ClixRecord& record) const {
-  const bool completed = library::LibraryIndexFile::isCompleted(record);
-  switch (filter) {
-    case Filter::Unread:
-      return !completed;
-    case Filter::Finished:
-      return completed;
-    case Filter::All:
-    default:
-      return true;
+  const bool epubOnly =
+      filter == Filter::EpubAll || filter == Filter::EpubUnread || filter == Filter::EpubFinished;
+  const bool wantUnread = filter == Filter::Unread || filter == Filter::EpubUnread;
+  const bool wantFinished = filter == Filter::Finished || filter == Filter::EpubFinished;
+  if (epubOnly && (record.flags & library::CLIX_BOOK_FLAG_EPUB) == 0) return false;
+  if (wantUnread || wantFinished) {
+    const bool completed = library::LibraryIndexFile::isCompleted(record);
+    if (wantUnread && completed) return false;
+    if (wantFinished && !completed) return false;
   }
+  return true;
 }
 
 void LibraryActivity::openFilterMenu() {
-  std::vector<std::string> options = {tr(STR_FILTER_ALL), tr(STR_FILTER_UNREAD), tr(STR_FILTER_FINISHED)};
+  std::vector<std::string> options = {tr(STR_FILTER_ALL),         tr(STR_FILTER_UNREAD),
+                                      tr(STR_FILTER_FINISHED),    tr(STR_FILTER_EPUB_ALL),
+                                      tr(STR_FILTER_EPUB_UNREAD), tr(STR_FILTER_EPUB_FINISHED)};
   startActivityForResult(
       std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "LibraryFilter", StrId::STR_FILTER, options,
                                                 static_cast<uint8_t>(filter)),
       [this](const ActivityResult& result) {
         if (!result.isCancelled) {
           const auto* selection = std::get_if<OptionSelectionResult>(&result.data);
-          if (selection != nullptr && selection->index < 3) {
+          if (selection != nullptr && selection->index < 6) {
             filter = static_cast<Filter>(selection->index);
+            saveFilter();
             rebuildContent();
           }
         }
         requestUpdate();
       });
+}
+
+void LibraryActivity::loadFilter() {
+  filter = Filter::All;
+  FsFile f;
+  if (!Storage.openFileForRead("LIBUI", kFilterPath, f)) return;
+  uint8_t v = 0;
+  if (f.read(&v, 1) == 1 && v <= static_cast<uint8_t>(Filter::EpubFinished)) filter = static_cast<Filter>(v);
+  f.close();
+}
+
+void LibraryActivity::saveFilter() const {
+  FsFile f;
+  if (!Storage.openFileForWrite("LIBUI", kFilterPath, f)) return;
+  const uint8_t v = static_cast<uint8_t>(filter);
+  f.write(&v, 1);
+  f.close();
 }
 
 void LibraryActivity::buildGroups(const bool byAuthor) {
@@ -251,7 +285,7 @@ void LibraryActivity::rebuildContent() {
 
   switch (tab) {
     case Tab::Recent: {
-      mode = Mode::List;
+      mode = Mode::Grid;
       const auto order = reversed ? library::SortOrder::RecentAsc : library::SortOrder::RecentDesc;
       const uint16_t n = index.bookCount();
       items.reserve(n);
@@ -406,6 +440,7 @@ void LibraryActivity::onEnter() {
   tab = Tab::Recent;
   reversed = false;
   query.clear();
+  loadFilter();
 
   ensureIndex();
   rebuildContent();
@@ -469,24 +504,27 @@ int LibraryActivity::tabIndexFromPoint(const int x, const int y) const {
   return index >= 0 && index < kTabCount ? index : -1;
 }
 
-void LibraryActivity::updateGridGeometry() {
+void LibraryActivity::coverSizeFor(const int cols, const int rows, int& outW, int& outH) const {
   const Rect area = contentRect();
   const int gap = UITheme::getInstance().getMetrics().verticalSpacing;
-  const bool twoByTwo = drilled;  // author or series drill-down
-  gridCols = twoByTwo ? 2 : 3;
-  gridRows = twoByTwo ? 2 : 3;
-
   const int rowSpacing = gap + 4;
-  int cw = std::max(1, (area.width - (gridCols - 1) * gap) / gridCols);
+  int cw = std::max(1, (area.width - (cols - 1) * gap) / cols);
   int ch = cw * kCoverAspectH / kCoverAspectW;
   const int availH = std::max(1, area.height - kTitleStripHeight);
-  const int maxCh = (availH - (gridRows - 1) * rowSpacing) / gridRows;
+  const int maxCh = (availH - (rows - 1) * rowSpacing) / rows;
   if (maxCh > 0 && ch > maxCh) {
     ch = maxCh;
     cw = std::max(1, ch * kCoverAspectW / kCoverAspectH);
   }
-  coverWidth = cw;
-  coverHeight = ch;
+  outW = cw;
+  outH = ch;
+}
+
+void LibraryActivity::updateGridGeometry() {
+  // Author/series drill-downs are 2x2; Recent and Title are 3x3.
+  gridCols = drilled ? 2 : 3;
+  gridRows = drilled ? 2 : 3;
+  coverSizeFor(gridCols, gridRows, coverWidth, coverHeight);
 }
 
 int LibraryActivity::gridIndexFromPoint(const int x, const int y) {
@@ -632,6 +670,11 @@ void LibraryActivity::drawGrid() {
 void LibraryActivity::ensurePageCovers() {
   if (mode != Mode::Grid || !indexReady || items.empty()) return;
   updateGridGeometry();
+  // The two grids the app can show, so a cover is generated at both sizes the
+  // first time it is cached (3x3 for Recent/Title, 2x2 for a drill-down).
+  int w3, h3, w2, h2;
+  coverSizeFor(3, 3, w3, h3);
+  coverSizeFor(2, 2, w2, h2);
   const int perPage = booksPerPage();
   const int total = static_cast<int>(items.size());
   const int pageStart = (static_cast<int>(selectorIndex) / perPage) * perPage;
@@ -648,8 +691,12 @@ void LibraryActivity::ensurePageCovers() {
     if (!index.readRecord(ordinal, record)) continue;
     std::string path;
     if (!index.readPath(record, path)) continue;
-    const std::string thumb = coverThumbPathFor(path, coverWidth, coverHeight);
-    if (!thumb.empty() && !Storage.exists(thumb.c_str())) needsGeneration = true;
+    if (FsHelpers::hasEpubExtension(path)) {
+      const std::string t3 = coverThumbPathFor(path, w3, h3);
+      const std::string t2 = coverThumbPathFor(path, w2, h2);
+      if ((!t3.empty() && !Storage.exists(t3.c_str())) || (!t2.empty() && !Storage.exists(t2.c_str())))
+        needsGeneration = true;
+    }
     paths.push_back(std::move(path));
   }
   if (!needsGeneration) {
@@ -664,8 +711,11 @@ void LibraryActivity::ensurePageCovers() {
   int processed = 0;
   for (const auto& path : paths) {
     if (FsHelpers::hasEpubExtension(path)) {
-      const std::string thumb = coverThumbPathFor(path, coverWidth, coverHeight);
-      if (!thumb.empty() && !Storage.exists(thumb.c_str())) {
+      const std::string t3 = coverThumbPathFor(path, w3, h3);
+      const std::string t2 = coverThumbPathFor(path, w2, h2);
+      const bool missing3 = !t3.empty() && !Storage.exists(t3.c_str());
+      const bool missing2 = !t2.empty() && !Storage.exists(t2.c_str());
+      if (missing3 || missing2) {
         Epub epub(path, "/.crosspoint");
         if (epub.load(true, true, Epub::XLocationLoadMode::Skip)) {
           if (!showing) {
@@ -673,7 +723,8 @@ void LibraryActivity::ensurePageCovers() {
             popup = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
           }
           GUI.fillPopupProgress(renderer, popup, 10 + (processed * 90) / totalToProcess);
-          epub.generateThumbBmp(coverWidth, coverHeight, &renderer, SETTINGS.getReaderFontId());
+          if (missing3) epub.generateThumbBmp(w3, h3, &renderer, SETTINGS.getReaderFontId());
+          if (missing2) epub.generateThumbBmp(w2, h2, &renderer, SETTINGS.getReaderFontId());
         }
       }
     }
@@ -686,6 +737,58 @@ void LibraryActivity::ensurePageCovers() {
   }
   loadedPageStart = pageStart;
   if (showing) requestUpdate();
+}
+
+void LibraryActivity::prefetchMissingCovers() {
+  if (!indexReady) return;
+  int w3, h3, w2, h2;
+  coverSizeFor(3, 3, w3, h3);
+  coverSizeFor(2, 2, w2, h2);
+
+  // Collect paths first: generating a cover opens the book, and only one reader
+  // can hold the card at a time.
+  std::vector<std::string> paths;
+  const uint16_t n = index.bookCount();
+  for (uint16_t ordinal = 0; ordinal < n; ordinal++) {
+    library::ClixRecord record{};
+    if (!index.readRecord(ordinal, record)) continue;
+    std::string path;
+    if (!index.readPath(record, path)) continue;
+    if (!FsHelpers::hasEpubExtension(path)) continue;
+    const std::string t3 = coverThumbPathFor(path, w3, h3);
+    const std::string t2 = coverThumbPathFor(path, w2, h2);
+    if ((!t3.empty() && !Storage.exists(t3.c_str())) || (!t2.empty() && !Storage.exists(t2.c_str())))
+      paths.push_back(std::move(path));
+  }
+  if (paths.empty()) return;
+
+  index.close();
+  Rect popup = GUI.drawPopup(renderer, tr(STR_LIBRARY_COVERS));
+  renderer.displayBuffer();
+  const int totalToProcess = std::max(1, static_cast<int>(paths.size()));
+  int processed = 0;
+  for (const auto& path : paths) {
+    const std::string t3 = coverThumbPathFor(path, w3, h3);
+    const std::string t2 = coverThumbPathFor(path, w2, h2);
+    const bool missing3 = !t3.empty() && !Storage.exists(t3.c_str());
+    const bool missing2 = !t2.empty() && !Storage.exists(t2.c_str());
+    if (missing3 || missing2) {
+      Epub epub(path, "/.crosspoint");
+      if (epub.load(true, true, Epub::XLocationLoadMode::Skip)) {
+        if (missing3) epub.generateThumbBmp(w3, h3, &renderer, SETTINGS.getReaderFontId());
+        if (missing2) epub.generateThumbBmp(w2, h2, &renderer, SETTINGS.getReaderFontId());
+      }
+    }
+    processed++;
+    if ((processed & 0x3) == 0) {
+      GUI.fillPopupProgress(renderer, popup, 100 * processed / totalToProcess);
+      renderer.displayBuffer();
+    }
+  }
+  if (!index.open(library::libraryIndexPath())) {
+    indexReady = false;
+    buildFailed = true;
+  }
 }
 
 void LibraryActivity::loop() {
