@@ -75,4 +75,14 @@ const char* libraryIndexPath();
 bool markLibraryIndexDirty();
 bool isLibraryIndexDirty();
 
+// Number of book files a build would index right now (a cheap walk with no
+// metadata parsing), and the count recorded in the current index.
+uint16_t countCardBooks(const char* rootPath);
+uint16_t indexedBookCount();
+
+// Marks the index stale only when the card's book count no longer matches the
+// index. Used after sessions (USB Drive, web transfer, catalog) that may or may
+// not have changed the books, so an untouched card does not trigger a rebuild.
+bool markLibraryIndexDirtyIfBookCountChanged();
+
 }  // namespace library

@@ -139,8 +139,8 @@ void NearbyBookTransferActivity::onExit() {
   receiveFile_.close();
   stopRadio();
   Activity::onExit();
-  // A received book may have been added; stale the library index.
-  library::markLibraryIndexDirty();
+  // A received book may have been added; rebuild only if the count changed.
+  library::markLibraryIndexDirtyIfBookCountChanged();
 }
 
 bool NearbyBookTransferActivity::skipLoopDelay() {

@@ -55,8 +55,8 @@ void CalibreConnectActivity::onEnter() {
 
 void CalibreConnectActivity::onExit() {
   Activity::onExit();
-  // Books may have been received; stale the library index for a rebuild.
-  library::markLibraryIndexDirty();
+  // Books may have been received; rebuild only if the count changed.
+  library::markLibraryIndexDirtyIfBookCountChanged();
 
   MDNS.end();
 

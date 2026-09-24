@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "LibraryIndexFile.h"
 #include "LibraryText.h"
@@ -212,6 +214,45 @@ bool readBookCompleted(const std::string& cachePath) {
     return buf[11] != 0;
   }
   return false;
+}
+
+// Counts the book files a build would index, using the same filters as the walk
+// (hidden/sidecar skipped, known book extensions, non-empty). A cheap proxy for
+// "did the card's book set change?" that avoids parsing any metadata. Only one
+// directory is open at a time: subdirectories are noted and visited after the
+// current directory is closed.
+uint16_t countBooksInDir(const std::string& path, const int depth) {
+  if (depth > LIBRARY_MAX_DEPTH) return 0;
+  HalFile dir = Storage.open(path.c_str());
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return 0;
+  }
+  dir.rewindDirectory();
+
+  uint16_t count = 0;
+  std::vector<std::string> subdirs;
+  for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+    char name[NAME_BUF_SIZE];
+    name[0] = '\0';
+    entry.getName(name, NAME_BUF_SIZE);
+    const bool isDir = entry.isDirectory();
+    const uint32_t size = isDir ? 0 : static_cast<uint32_t>(entry.fileSize());
+    entry.close();
+    if (name[0] == '\0' || name[0] == '.') continue;
+    if (isDir) {
+      subdirs.emplace_back(name);
+    } else if (isBookName(name) && size > 0) {
+      if (count < CLIX_MAX_RECORDS) count++;
+    }
+  }
+  dir.close();
+
+  for (const std::string& sub : subdirs) {
+    const uint32_t grown = static_cast<uint32_t>(count) + countBooksInDir(joinLibraryPath(path, sub), depth + 1);
+    count = static_cast<uint16_t>(std::min<uint32_t>(grown, CLIX_MAX_RECORDS));
+  }
+  return count;
 }
 
 // macOS AppleDouble sidecars and hidden entries. The file browser already hides
@@ -1148,6 +1189,24 @@ bool markLibraryIndexDirty() {
 }
 
 bool isLibraryIndexDirty() { return dirtyInMemory || Storage.exists(DIRTY_PATH); }
+
+uint16_t countCardBooks(const char* rootPath) { return countBooksInDir(rootPath, 1); }
+
+uint16_t indexedBookCount() {
+  LibraryIndexFile index;
+  if (!index.open(INDEX_PATH)) return 0;
+  return index.bookCount();
+}
+
+bool markLibraryIndexDirtyIfBookCountChanged() {
+  const uint16_t current = countCardBooks("/");
+  const uint16_t indexed = indexedBookCount();
+  if (indexed == 0 || current != indexed) {
+    markLibraryIndexDirty();
+    return true;
+  }
+  return false;
+}
 
 bool buildLibraryIndex(const char* rootPath, BuildStats& stats, const bool readMetadata) {
   const uint32_t startMs = millis();

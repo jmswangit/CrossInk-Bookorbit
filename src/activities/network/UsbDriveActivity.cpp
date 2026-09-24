@@ -50,9 +50,10 @@ void UsbDriveActivity::onExit() {
   if (!restartRequested) Storage.endUsbDrive();
 #endif
   Activity::onExit();
-  // The computer may have added or removed books while the card was exposed;
-  // the firmware cannot see those writes, so always stale the index on exit.
-  library::markLibraryIndexDirty();
+  // The computer may have added or removed books while the card was exposed.
+  // The firmware cannot see those writes, so compare the book count against the
+  // index and rebuild only when it actually changed.
+  library::markLibraryIndexDirtyIfBookCountChanged();
 }
 
 void UsbDriveActivity::loop() {

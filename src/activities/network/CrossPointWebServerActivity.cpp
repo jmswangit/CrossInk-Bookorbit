@@ -98,8 +98,9 @@ void CrossPointWebServerActivity::onEnter() {
 
 void CrossPointWebServerActivity::onExit() {
   Activity::onExit();
-  // Uploads, deletes, renames and WebDAV writes may have changed the card.
-  library::markLibraryIndexDirty();
+  // Uploads, deletes and WebDAV writes may have changed the card; rebuild only
+  // if the book count changed (renames keep the count, which is acceptable).
+  library::markLibraryIndexDirtyIfBookCountChanged();
 
   state = WebServerActivityState::SHUTTING_DOWN;
 

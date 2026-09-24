@@ -99,8 +99,8 @@ void OpdsBookBrowserActivity::onEnter() {
 
 void OpdsBookBrowserActivity::onExit() {
   Activity::onExit();
-  // Downloads may have added books; stale the library index for a rebuild.
-  library::markLibraryIndexDirty();
+  // Downloads may have added books; rebuild only if the count changed.
+  library::markLibraryIndexDirtyIfBookCountChanged();
   clearEntries();
   entries.reset();
   navigationHistory.clear();

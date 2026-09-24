@@ -164,8 +164,8 @@ void BookOrbitCatalogBrowserActivity::onEnter() {
 
 void BookOrbitCatalogBrowserActivity::onExit() {
   Activity::onExit();
-  // Downloads may have added books; stale the library index for a rebuild.
-  library::markLibraryIndexDirty();
+  // Downloads may have added books; rebuild only if the count changed.
+  library::markLibraryIndexDirtyIfBookCountChanged();
   entries.clear();
   BookOrbitDownloadIndex::unload();
 
