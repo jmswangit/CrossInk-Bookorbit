@@ -16,6 +16,8 @@ Based on CrossInk v1.6.1.
 
 ### Changed
 
+- A book downloaded from the BookOrbit catalog only takes its place on the card once the download is complete and the file opens as an EPUB. Until then it is kept aside, so an interrupted download no longer leaves a truncated book behind, and a download the card has no room for stops before it starts, with "Insufficient SD card space".
+- Books downloaded or deleted from the BookOrbit catalog show up in the new Library right away, without rebuilding its index by hand.
 - BookOrbit Sync is on the Location tab of the new reader menu on devices with buttons, and stays in Sync & Transfer on touch devices.
 - Turning reading stats off for a book, new in CrossInk v1.6.1, also stops recording its reading sessions for BookOrbit.
 - On devices without a clock chip, the offer to keep the clock running through sleep now appears when you add a clock or a date to a status bar, since the Hide Clock setting it used to follow is gone.
@@ -25,6 +27,7 @@ Based on CrossInk v1.6.1.
 - Check for Updates no longer crashes and restarts the X4 Pro while it connects to Wi-Fi ([#88](https://github.com/agosez/CrossInk-Bookorbit/issues/88)).
 - Shortcuts set to BookOrbit Sync keep working after this update. CrossInk v1.6.1 reuses the numbers they were saved under for its Library shortcut, so they would have opened the Library instead; they are carried over the first time the device starts.
 - BookOrbit Sync no longer restarts the device when the server answers with something far larger than expected, such as an error page from a proxy. The sync stops with an error instead.
+- A re-download from the BookOrbit catalog can no longer cost you the book when the very last step fails: the copy you had is put back.
 - Reading sessions recorded for BookOrbit are no longer lost when the reader is left through a restart, for instance when starting File Transfer from a book.
 - Renaming a book from the web file manager keeps it marked as on the device in the BookOrbit catalog, as renaming it on the device already did.
 - A book that has highlights can be renamed again, from the File Browser and from the web file manager. Since v1.6.0+bookorbit.1 the rename was refused with an error, because the highlights are stored under the book's contents rather than its name and the rename tried to move them.

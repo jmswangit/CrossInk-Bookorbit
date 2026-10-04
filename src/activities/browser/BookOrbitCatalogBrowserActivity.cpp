@@ -5,8 +5,10 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <ZipFile.h>
 
 #include <algorithm>
 #include <cctype>
@@ -50,9 +52,9 @@ constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 1000;
 constexpr unsigned long DOWNLOAD_PROGRESS_MAX_UPDATE_MS = 5000;
 // Hold threshold for the book action menu (firmware convention, as in Recent Books).
 constexpr unsigned long LONG_PRESS_MS = 1000;
-// A re-download lands next to the book it replaces under this suffix. Not ".epub",
-// so a leftover from an interrupted run never shows up as a book.
-constexpr char REDOWNLOAD_SUFFIX[] = ".part";
+// Where HttpDownloader stages a download until it is complete and checked (see
+// DownloadFileSwap). Not ".epub", so a leftover never shows up as a book.
+constexpr char STAGED_DOWNLOAD_SUFFIX[] = ".part";
 // Marker appended (right-aligned) to catalog rows whose book already exists on the
 // device. U+2022 bullet: guaranteed by the built-in fonts' default glyph intervals.
 constexpr char ON_DEVICE_MARKER[] = "\xE2\x80\xA2";
@@ -631,17 +633,18 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
     return;
   }
 
-  // A re-download keeps the book where it is (its reading progress and caches are
-  // keyed by that path) and streams into a side file first: downloadToFile deletes
-  // its target on failure or cancel, which must not cost the user the copy they had.
+  // A re-download keeps the book where it is: its reading progress and caches are
+  // keyed by that path. Either way the transfer is staged in a side file and only
+  // swapped in once it is complete and opens as an EPUB (see downloadOptions below),
+  // so a failure or a cancel never costs the user the copy they had, and a new book
+  // never sits half-written under its own name.
   const std::string finalPath = replacePath.empty() ? catalogBookPath(detail, epubFile) : replacePath;
-  const std::string filename = replacePath.empty() ? finalPath : finalPath + REDOWNLOAD_SUFFIX;
   // Create the download folder and, when the server's naming template nests the book
   // ("Sprawl/<book>.epub"), every folder it asks for. mkdir's pFlag creates the
   // missing parents in one call, so this covers both at once.
-  const size_t lastSlash = filename.find_last_of('/');
+  const size_t lastSlash = finalPath.find_last_of('/');
   if (lastSlash > 0 && lastSlash != std::string::npos) {
-    const std::string folder = filename.substr(0, lastSlash);
+    const std::string folder = finalPath.substr(0, lastSlash);
     if (!Storage.exists(folder.c_str()) && !Storage.mkdir(folder.c_str())) {
       LOG_ERR("BookOrbit", "Could not create download folder %s", folder.c_str());
       state = BrowserState::ERROR;
@@ -651,7 +654,7 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
     }
   }
 
-  LOG_DBG("BookOrbit", "Downloading file %lld -> %s", static_cast<long long>(epubFile.id), filename.c_str());
+  LOG_DBG("BookOrbit", "Downloading file %lld -> %s", static_cast<long long>(epubFile.id), finalPath.c_str());
 
   bool cancelRequested = false;
   auto pollCancel = [this, &cancelRequested] {
@@ -678,6 +681,17 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
   // Small client RX buffer (see BookOrbitCatalogClient::fetchJson) so the
   // headers-time body cache can't demand a large realloc next to the TLS buffers.
   downloadOptions.clientRxBufferSize = 2048;
+  // CrossInk v1.6.1's download safeguards, as its OPDS browser uses them: stage the file
+  // as "<book>.part", refuse a book the card cannot hold before writing any of it, and
+  // only put the file in place once it opens as an EPUB. A body cut short without a
+  // Content-Length, or an error page served as the file, used to land as the book.
+  downloadOptions.stageAsPart = true;
+  downloadOptions.checkFreeSpace = true;
+  downloadOptions.validate = [](const std::string& path) {
+    ZipFile zip(path);
+    size_t size = 0;
+    return zip.getInflatedFileSize("META-INF/container.xml", &size) && size > 0;
+  };
 
   // Free the current listing while the download runs: every KB of contiguous heap
   // matters next to the TLS session, and the list is rebuilt from listQuery after.
@@ -699,7 +713,7 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
     }
     downloadOptions.resumePartial = attempt > 0;
     result = BookOrbitCatalogClient::downloadFile(
-        epubFile.id, filename,
+        epubFile.id, finalPath,
         [this, &lastRenderedPercent, &lastProgressUpdateMs, &percent, &now](const size_t downloaded,
                                                                             const size_t total) {
           downloadProgress = downloaded;
@@ -719,30 +733,27 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
           }
         },
         &cancelRequested, downloadOptions);
-    if (result == HttpDownloader::OK || result == HttpDownloader::ABORTED) break;
+    // A full card will not have more room on the next attempt.
+    if (result == HttpDownloader::OK || result == HttpDownloader::ABORTED ||
+        result == HttpDownloader::INSUFFICIENT_SPACE) {
+      break;
+    }
     LOG_ERR("BookOrbit", "Download attempt %d/%d failed (err=%d), retrying", attempt + 1, MAX_DOWNLOAD_ATTEMPTS,
             static_cast<int>(result));
   }
 
-  if (result == HttpDownloader::OK && filename != finalPath) {
-    // SdFat's rename does not overwrite, so the old copy goes first.
-    Storage.remove(finalPath.c_str());
-    if (!Storage.rename(filename.c_str(), finalPath.c_str())) {
-      LOG_ERR("BookOrbit", "Could not move re-download %s into place", filename.c_str());
-      result = HttpDownloader::FILE_ERROR;
-    }
-  }
-
   const bool downloadFailed = result != HttpDownloader::OK && result != HttpDownloader::ABORTED;
   if (downloadFailed) {
-    // preservePartial kept the partial file for resuming between attempts; don't
-    // leave a truncated EPUB behind once we give up.
-    Storage.remove(filename.c_str());
+    // preservePartial kept the staged file for resuming between attempts; don't
+    // leave it behind once we give up.
+    Storage.remove((finalPath + STAGED_DOWNLOAD_SUFFIX).c_str());
   }
 
   if (result == HttpDownloader::OK) {
     clearBookCache(finalPath);
     BookOrbitDownloadIndex::record(bookId, finalPath);
+    // A new book, or new contents under a known path: the Library's index is stale.
+    library::invalidateLibraryIndex();
   } else if (result == HttpDownloader::ABORTED) {
     LOG_DBG("BookOrbit", "Download cancelled");
     if (goHomeAfterCancel) {
@@ -752,7 +763,7 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
     mappedInput.suppressNextBackRelease();
   } else {
     LOG_ERR("BookOrbit", "Download failed (err=%d)", static_cast<int>(result));
-    errorMessage = tr(STR_DOWNLOAD_FAILED);
+    errorMessage = result == HttpDownloader::INSUFFICIENT_SPACE ? tr(STR_SD_CARD_FULL) : tr(STR_DOWNLOAD_FAILED);
   }
 
   // The listing was freed for download headroom; rebuild it from the stored
@@ -920,6 +931,7 @@ void BookOrbitCatalogBrowserActivity::promptDeleteBook(const size_t index) {
                              return;
                            }
                            RECENT_BOOKS.removeByPath(entry.path);
+                           library::invalidateLibraryIndex();
                            // Re-detect rather than just clearing the flag: another copy (the SD root,
                            // /Read) may still match. The index drops its now-stale entry on lookup.
                            entry.onDevice = bookOnDevice(entry.bookId, entry.title, entry.subtitle, entry.path);
