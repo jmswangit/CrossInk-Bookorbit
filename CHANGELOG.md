@@ -16,6 +16,7 @@ Based on CrossInk v1.6.1.
 
 ### Changed
 
+- When BookOrbit Sync asks which position to keep, it now shows this device and the server as two cards, each with its percentage, a progress bar, the page and the chapter, and marks the one that is further along as "Ahead". This is the layout CrossInk v1.6.1 gave its KOReader sync.
 - A book downloaded from the BookOrbit catalog only takes its place on the card once the download is complete and the file opens as an EPUB. Until then it is kept aside, so an interrupted download no longer leaves a truncated book behind, and a download the card has no room for stops before it starts, with "Insufficient SD card space".
 - Books downloaded or deleted from the BookOrbit catalog show up in the new Library right away, without rebuilding its index by hand.
 - BookOrbit Sync is on the Location tab of the new reader menu on devices with buttons, and stays in Sync & Transfer on touch devices.
