@@ -5,6 +5,14 @@ records only its own additions. Each release states the CrossInk version it is b
 on; for everything inherited from upstream, see the
 [CrossInk changelog](https://github.com/uxjulia/CrossInk/blob/main/CHANGELOG.md).
 
+## [Unreleased]
+
+Based on CrossInk v1.6.0.
+
+### Fixed
+
+- Check for Updates no longer crashes and restarts the X4 Pro while it connects to Wi-Fi ([#88](https://github.com/agosez/CrossInk-Bookorbit/issues/88)).
+
 ## [v1.6.0+bookorbit.2] - 2026-10-01
 
 Based on CrossInk v1.6.0.
