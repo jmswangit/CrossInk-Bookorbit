@@ -24,6 +24,7 @@ Based on CrossInk v1.6.1.
 
 - Check for Updates no longer crashes and restarts the X4 Pro while it connects to Wi-Fi ([#88](https://github.com/agosez/CrossInk-Bookorbit/issues/88)).
 - Shortcuts set to BookOrbit Sync keep working after this update. CrossInk v1.6.1 reuses the numbers they were saved under for its Library shortcut, so they would have opened the Library instead; they are carried over the first time the device starts.
+- BookOrbit Sync no longer restarts the device when the server answers with something far larger than expected, such as an error page from a proxy. The sync stops with an error instead.
 - Reading sessions recorded for BookOrbit are no longer lost when the reader is left through a restart, for instance when starting File Transfer from a book.
 - Renaming a book from the web file manager keeps it marked as on the device in the BookOrbit catalog, as renaming it on the device already did.
 - A book that has highlights can be renamed again, from the File Browser and from the web file manager. Since v1.6.0+bookorbit.1 the rename was refused with an error, because the highlights are stored under the book's contents rather than its name and the rename tried to move them.
