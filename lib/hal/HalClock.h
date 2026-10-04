@@ -69,6 +69,14 @@ class HalClock {
   //
   // Debouncing (skip if already synced once) is enforced by the caller, not here,
   // so the HAL stays free of any app-layer settings dependency.
+  // True on every board: this fork can display the time and the date wherever it runs,
+  // from the DS3231 where there is one and from the system clock otherwise, which any
+  // board sets over WiFi. Use it, not isAvailable(), to decide whether a clock or date
+  // item may be offered, saved or given room; whether a time is known right now is
+  // hasCurrentTime(), and drawing leaves the item empty until it is. Defined out of line
+  // so that callers keep a real question to ask, whatever one build's answer is.
+  bool canDisplayTime() const;
+
   // True when a wall-clock time can be displayed: either the DS3231 is present, or the
   // system clock has been set (by NTP). Callers that reserve screen space for a clock
   // must use this rather than isAvailable(), so the reservation matches what is drawn.
@@ -79,6 +87,11 @@ class HalClock {
   // "H:MM AM"/"HH:MM PM" in 12-hour mode. Returns false when no clock has been set.
   bool formatCurrentTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased = 48,
                          bool use12Hour = false) const;
+
+  // The date counterpart: formatDate() from the DS3231, or the same output from the
+  // system clock on boards without one. Returns false when no clock has been set.
+  bool formatCurrentDate(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased = 48,
+                         DateFormat dateFormat = MONTH_DAY_YEAR_LONG, char numericSeparator = '/') const;
 
   // Sets the system clock from NTP. Works with or without a DS3231: boards without one
   // have nothing else keeping wall-clock time, and their status-bar clock reads the

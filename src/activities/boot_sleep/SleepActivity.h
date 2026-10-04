@@ -26,6 +26,8 @@ class SleepActivity final : public Activity {
         sleepPopupOrientation(sleepPopupOrientation),
         pass(pass) {}
   void onEnter() override;
+  // Whether this screen is independent of the outgoing activity's saves.
+  bool rendersBeforeExit() const;
 
  private:
   void renderSleepScreen();

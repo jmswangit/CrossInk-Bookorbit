@@ -33,6 +33,20 @@ HALCLOCK_METHODS = """\
   bool syncSystemTimeFromNTP() { return false; }
 """
 
+# Added with the CrossInk v1.6.1 alignment: status bars can hold a clock and a
+# date, which the fork offers on every board. Patched on their own so a copy
+# that already carries the methods above still gets them.
+HALCLOCK_DISPLAY_METHODS = """\
+  bool canDisplayTime() const { return true; }
+  bool formatCurrentDate(char *buf, size_t bufSize,
+                         uint8_t utcOffsetQuarterHoursBiased = 48,
+                         DateFormat dateFormat = MONTH_DAY_YEAR_LONG,
+                         char numericSeparator = '/') const {
+    return formatDate(buf, bufSize, utcOffsetQuarterHoursBiased, dateFormat,
+                      numericSeparator);
+  }
+"""
+
 FIRMWARE_FLASH_STUBS = """\
 Result validateOpenImageFile(HalFile &, size_t) {
   LOG_DBG(
@@ -82,6 +96,10 @@ def patch_env(env: str) -> None:
             "  bool syncFromNTP();\n",
             "  bool syncFromNTP();\n" + HALCLOCK_METHODS, 1)):
         changed.append("HalClock methods")
+    if patch(src / "HalClock.h", "canDisplayTime", lambda t: t.replace(
+            "  bool syncFromNTP();\n",
+            "  bool syncFromNTP();\n" + HALCLOCK_DISPLAY_METHODS, 1)):
+        changed.append("HalClock display methods")
 
     # 2. startDeepSleep grew a keepPowerLatched flag (battery-latch boards);
     #    meaningless on a host, accepted and ignored.

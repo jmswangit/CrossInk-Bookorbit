@@ -298,7 +298,7 @@ bool HalGPIO::hasEdgeSideButtons() const {
          BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Classic;
 }
 
-bool HalGPIO::verifyPowerButtonWakeup(const bool shortPressWakes, const unsigned long minHoldMs) {
+bool HalGPIO::verifyPowerButtonWakeup(const bool shortPressWakes, const uint16_t longHoldMs) {
   // M5Paper v1.1 reaches setup after a normal wheel click has already been
   // released. Its hardware pull-ups make this ghost-wake debounce unnecessary.
   if (BoardConfig::isPaperMono() || BoardConfig::isM5PaperV11() || BoardConfig::ACTIVE.input.power < 0) {
@@ -306,15 +306,25 @@ bool HalGPIO::verifyPowerButtonWakeup(const bool shortPressWakes, const unsigned
   }
 
   constexpr unsigned long POWER_WAKE_STABILITY_MS = 10;
-  const unsigned long holdMs = shortPressWakes ? POWER_WAKE_STABILITY_MS : std::max(POWER_WAKE_STABILITY_MS, minHoldMs);
   const bool heldAtFirstSample = inputMgr.isPowerButtonPhysicallyPressed();
   const unsigned long sampleStart = millis();
   inputMgr.update();
-  while (millis() - sampleStart < holdMs || inputMgr.isDebouncePending()) {
+  while (millis() - sampleStart < POWER_WAKE_STABILITY_MS || inputMgr.isDebouncePending()) {
     delay(1);
     inputMgr.update();
   }
-  return shortPressWakes || (heldAtFirstSample && inputMgr.isPowerButtonPhysicallyPressed());
+  if (shortPressWakes) return true;
+  if (!heldAtFirstSample || !inputMgr.isPowerButtonPhysicallyPressed()) return false;
+
+  // Deep sleep wakes as soon as the GPIO changes. Keep the panel and SD card
+  // asleep until the held press qualifies as a long Power gesture. millis()
+  // starts at reset, so time spent reaching this early boot check counts too.
+  while (millis() < longHoldMs) {
+    delay(1);
+    inputMgr.update();
+    if (!inputMgr.isPowerButtonPhysicallyPressed()) return false;
+  }
+  return true;
 }
 
 bool HalGPIO::isPowerButtonPhysicallyPressed() const { return inputMgr.isPowerButtonPhysicallyPressed(); }

@@ -7,11 +7,26 @@ on; for everything inherited from upstream, see the
 
 ## [Unreleased]
 
-Based on CrossInk v1.6.0.
+Based on CrossInk v1.6.1.
+
+### Added
+
+- The Cover Grid home screen, new in CrossInk v1.6.1 on devices with PSRAM, has a BookOrbit tab once an account is set up, next to Library and OPDS.
+- The date can be shown on devices without a clock chip, like the clock already could. CrossInk v1.6.1 lets you place a clock and a date in the status bars; both are offered on every device, and the date appears once the device has set its time over Wi-Fi.
+
+### Changed
+
+- BookOrbit Sync is on the Location tab of the new reader menu on devices with buttons, and stays in Sync & Transfer on touch devices.
+- Turning reading stats off for a book, new in CrossInk v1.6.1, also stops recording its reading sessions for BookOrbit.
+- On devices without a clock chip, the offer to keep the clock running through sleep now appears when you add a clock or a date to a status bar, since the Hide Clock setting it used to follow is gone.
 
 ### Fixed
 
 - Check for Updates no longer crashes and restarts the X4 Pro while it connects to Wi-Fi ([#88](https://github.com/agosez/CrossInk-Bookorbit/issues/88)).
+- Shortcuts set to BookOrbit Sync keep working after this update. CrossInk v1.6.1 reuses the numbers they were saved under for its Library shortcut, so they would have opened the Library instead; they are carried over the first time the device starts.
+- Reading sessions recorded for BookOrbit are no longer lost when the reader is left through a restart, for instance when starting File Transfer from a book.
+- Renaming a book from the web file manager keeps it marked as on the device in the BookOrbit catalog, as renaming it on the device already did.
+- A book that has highlights can be renamed again, from the File Browser and from the web file manager. Since v1.6.0+bookorbit.1 the rename was refused with an error, because the highlights are stored under the book's contents rather than its name and the rename tried to move them.
 
 ## [v1.6.0+bookorbit.2] - 2026-10-01
 

@@ -1,5 +1,6 @@
 #include "BookOrbitSyncClient.h"
 
+#include <AppVersion.h>
 #include <ArduinoJson.h>
 #ifdef SIMULATOR
 #include <ArduinoJsonStringCompat.h>
@@ -245,7 +246,7 @@ void logHeapStats(const char* phase, const char* url = nullptr) {
 std::unique_ptr<freeink::SecureHttpClient> s_session;
 
 void configureClient(freeink::SecureHttpClient& http, const bool reuse) {
-  http.setUserAgent("CrossInk-ESP32-" CROSSINK_VERSION);
+  http.setUserAgent(AppVersion::userAgent());
   http.setTimeout(15000);
   http.setReuse(reuse);
   // Unverified, like every other network path in this firmware: wolfSSL is the only

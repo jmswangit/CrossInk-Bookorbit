@@ -42,6 +42,22 @@ void HalPowerManager::begin() {
   assert(modeMutex != nullptr);
 }
 
+bool HalPowerManager::updateBatteryCalibration() {
+  if (BoardConfig::ACTIVE.board != BoardConfig::Board::XteinkX3 &&
+      BoardConfig::ACTIVE.board != BoardConfig::Board::XteinkX3Uc8279)
+    return false;
+
+  // The SDK performs one best-effort attempt per boot. False is terminal,
+  // including I2C failure; an interrupted/failed load is retried next boot.
+  const bool wasPending = batteryCalibrationPending;
+  batteryCalibrationPending = BatteryMonitor::loadDesignCapacity();
+  if (wasPending && !batteryCalibrationPending) {
+    _batteryLastPollMs = 0;  // Sample the corrected gauge on the next battery read.
+    LOG_INF("PWR", "X3 battery capacity check finished");
+  }
+  return batteryCalibrationPending;
+}
+
 void HalPowerManager::setPowerSaving(bool enabled) {
   if (normalFreq <= 0) {
     return;  // invalid state
@@ -90,6 +106,12 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool keepPowerLatched) const {
+  // Once started, let the SDK exit configuration mode and seal the gauge.
+  // Sleep runs on the main task after rendering has stopped. The SDK bounds
+  // every wait; ordinary sleep has no delay once the startup check is done.
+  while (batteryCalibrationPending && BatteryMonitor::loadDesignCapacity()) {
+    delay(20);
+  }
   LOG_INF("PWR", "Deep sleep: power latch %s", keepPowerLatched ? "kept (clock keeps running)" : "released");
   disableWiFiBeforeDeepSleep();
 

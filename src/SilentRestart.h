@@ -38,6 +38,10 @@ constexpr uint32_t BOOKORBIT_SLEEP_SYNC_PAYLOAD_POWER_HELD = 1u << 0;
 // BOOKORBIT_SLEEP_SYNC payload: the sleep screen is the Quick Resume frame, which the sync
 // displays again from the saved file rather than drawing it (see SleepScreenPass).
 constexpr uint32_t BOOKORBIT_SLEEP_SYNC_PAYLOAD_QUICK_RESUME = 1u << 1;
+// BOOKORBIT_SLEEP_SYNC payload: the Library index matched the card when the device went to
+// sleep. The restart drops that knowledge, which upstream otherwise carries from sleep to
+// wake (see library::ScanSleepToken), so the sleep sync hands it over to its own sleep.
+constexpr uint32_t BOOKORBIT_SLEEP_SYNC_PAYLOAD_LIBRARY_CURRENT = 1u << 2;
 
 constexpr bool isNetworkBootTargetValue(const uint32_t value) {
   switch (static_cast<NetworkBootTarget>(value)) {
