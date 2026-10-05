@@ -103,9 +103,9 @@ class LibraryActivity final : public Activity {
   bool passesFilter(const library::ClixRecord& record) const;
   void loadFilter();
   void saveFilter() const;
-  // Generates cover thumbnails for every indexed book still missing them,
-  // updating the on-screen progress popup. Returns when the card is done.
-  void prefetchMissingCovers();
+  // Generates cover thumbnails (both grid sizes) for the books the last build
+  // reported as new/changed, behind a progress popup.
+  void prefetchListedCovers();
   void moveSelection(int index);
   void activateSelected();
   void goUp();

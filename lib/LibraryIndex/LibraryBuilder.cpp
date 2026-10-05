@@ -27,6 +27,9 @@ constexpr char NEW_PATH[] = "/.crosspoint/library.new";
 constexpr char BACKUP_PATH[] = "/.crosspoint/library.bak";
 constexpr char STAGE_PATH[] = "/.crosspoint/library.stage";
 constexpr char DIRTY_PATH[] = "/.crosspoint/library.dirty";
+// Books parsed by the most recent build, one path per line, for the Library
+// screen to prefetch covers for. Written only when there were new/changed books.
+constexpr char PREFETCH_PATH[] = "/.crosspoint/library.prefetch";
 constexpr char CACHE_DIR[] = "/.crosspoint";
 // Sticky fallback when the marker could not be persisted (card unavailable at
 // write time): callers must still see the index as stale until a rebuild clears it.
@@ -202,19 +205,17 @@ bool isBookName(const std::string& name) {
 // BookReadingStats.cpp); a missing or older file means "not finished". Reading
 // the raw byte here avoids pulling the reader's stats type into this library.
 bool readBookCompleted(const std::string& cachePath) {
-  static const char* const kNames[] = {"stats_v5.bin", "stats_v4.bin", "stats_v3.bin", "stats_v2.bin", "stats.bin"};
-  for (const char* name : kNames) {
-    FsFile f;
-    if (!Storage.openFileForRead("LIBIDX", cachePath + "/" + name, f)) continue;
-    uint8_t buf[12] = {0};
-    const int got = f.read(buf, sizeof(buf));
-    f.close();
-    if (got < 12) continue;
-    const uint8_t version = buf[0];
-    if (version < 2 || version > 5) continue;
-    return buf[11] != 0;
-  }
-  return false;
+  // Only the current stats version: trying the older names cost up to four
+  // extra failed opens per book on every build and the library spans a card.
+  FsFile f;
+  if (!Storage.openFileForRead("LIBIDX", cachePath + "/stats_v5.bin", f)) return false;
+  uint8_t buf[12] = {0};
+  const int got = f.read(buf, sizeof(buf));
+  f.close();
+  if (got < 12) return false;
+  const uint8_t version = buf[0];
+  if (version < 2 || version > 5) return false;
+  return buf[11] != 0;
 }
 
 // True when a string is just a number ("2", "2.0", " 3 "). Exporters sometimes
@@ -346,6 +347,8 @@ struct WalkState {
   uint16_t priorCount = 0;
   uint16_t reused = 0;
   uint32_t serviceUnits = 0;
+  // Full paths of books parsed this build (new or changed), for cover prefetch.
+  std::vector<std::string> newBookPaths;
 };
 
 // Bound to shownTitle when a book told us nothing. A `std::string()` temporary
@@ -430,6 +433,7 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   // builds spine, TOC, CSS, cover, or section caches during the library walk.
   if (!reuseMetadata && extractionExpected) {
     st.stats->parsed++;
+    st.newBookPaths.emplace_back(fullPath);
     Epub epub(fullPath, CACHE_DIR);
     std::string bookTitle;
     std::string bookSeries;
@@ -1542,6 +1546,22 @@ bool buildLibraryIndex(const char* rootPath, BuildStats& stats, const bool readM
           static_cast<unsigned>(stats.indexReplaced), static_cast<unsigned>(stats.duplicatesDropped),
           static_cast<unsigned>(stats.unreadableSkipped), static_cast<unsigned>(stats.walkMs));
   if (ok) clearLibraryIndexDirty();
+
+  // Hand the parsed books to the Library screen so it can prefetch just their
+  // covers (an empty list clears any stale request).
+  Storage.remove(PREFETCH_PATH);
+  if (ok && !st.newBookPaths.empty()) {
+    HalFile out;
+    if (Storage.openFileForWrite("LIBIDX", PREFETCH_PATH, out)) {
+      for (const std::string& path : st.newBookPaths) {
+        out.write(reinterpret_cast<const uint8_t*>(path.data()), path.size());
+        out.write(static_cast<uint8_t>('\n'));
+      }
+      out.close();
+    } else {
+      LOG_ERR("LIBIDX", "cannot write cover prefetch list");
+    }
+  }
   return ok;
 }
 

@@ -38,6 +38,7 @@ namespace fui = freeink::ui;
 namespace {
 constexpr fui::ActionId ACTION_ROW = 1;
 constexpr char kFilterPath[] = "/.crosspoint/library.filter";
+constexpr char kPrefetchPath[] = "/.crosspoint/library.prefetch";
 constexpr unsigned long LONG_PRESS_MS = 1000;
 
 // Nudge the header search icon down so it sits optically centered in the band.
@@ -117,9 +118,8 @@ void LibraryActivity::ensureIndex() {
     indexReady = true;
     LOG_INF("LIBUI", "library ready: %u books (%u parsed, %u reused)", static_cast<unsigned>(index.bookCount()),
             static_cast<unsigned>(stats.parsed), static_cast<unsigned>(stats.metadataReused));
-    // Only after a rebuild: fill in any covers the card is still missing, with
-    // the progress popup. On a plain reopen there is nothing new to do.
-    prefetchMissingCovers();
+    // Prefetch covers only for the books the build reported as new/changed.
+    prefetchListedCovers();
   } else {
     buildFailed = true;
     LOG_ERR("LIBUI", "library index unavailable");
@@ -739,28 +739,35 @@ void LibraryActivity::ensurePageCovers() {
   if (showing) requestUpdate();
 }
 
-void LibraryActivity::prefetchMissingCovers() {
+void LibraryActivity::prefetchListedCovers() {
   if (!indexReady) return;
+  // The builder lists the paths it parsed (new or changed books); generate only
+  // those covers instead of rescanning the whole index on every rebuild.
+  std::vector<std::string> paths;
+  FsFile listFile;
+  if (Storage.openFileForRead("LIBUI", kPrefetchPath, listFile)) {
+    std::string current;
+    char buf[256];
+    int got = 0;
+    while ((got = listFile.read(buf, sizeof(buf))) > 0) {
+      for (int i = 0; i < got; i++) {
+        if (buf[i] == '\n') {
+          if (!current.empty()) paths.push_back(std::move(current));
+          current.clear();
+        } else {
+          current.push_back(buf[i]);
+        }
+      }
+    }
+    if (!current.empty()) paths.push_back(std::move(current));
+    listFile.close();
+  }
+  Storage.remove(kPrefetchPath);
+  if (paths.empty()) return;
+
   int w3, h3, w2, h2;
   coverSizeFor(3, 3, w3, h3);
   coverSizeFor(2, 2, w2, h2);
-
-  // Collect paths first: generating a cover opens the book, and only one reader
-  // can hold the card at a time.
-  std::vector<std::string> paths;
-  const uint16_t n = index.bookCount();
-  for (uint16_t ordinal = 0; ordinal < n; ordinal++) {
-    library::ClixRecord record{};
-    if (!index.readRecord(ordinal, record)) continue;
-    std::string path;
-    if (!index.readPath(record, path)) continue;
-    if (!FsHelpers::hasEpubExtension(path)) continue;
-    const std::string t3 = coverThumbPathFor(path, w3, h3);
-    const std::string t2 = coverThumbPathFor(path, w2, h2);
-    if ((!t3.empty() && !Storage.exists(t3.c_str())) || (!t2.empty() && !Storage.exists(t2.c_str())))
-      paths.push_back(std::move(path));
-  }
-  if (paths.empty()) return;
 
   index.close();
   Rect popup = GUI.drawPopup(renderer, tr(STR_LIBRARY_COVERS));
