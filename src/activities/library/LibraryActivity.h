@@ -76,6 +76,11 @@ class LibraryActivity final : public Activity {
   int loadedPageStart = kNoPageLoaded;
   bool backLongPressFired = false;
   bool confirmLongPressFired = false;
+  bool gridLongPressFired = false;
+  bool gridPressActive = false;
+  unsigned long gridPressStartMs = 0;
+  int gridPressX = 0;
+  int gridPressY = 0;
 
   freeink::ui::ListNav listNav;
 
@@ -109,6 +114,12 @@ class LibraryActivity final : public Activity {
   void moveSelection(int index);
   void activateSelected();
   void goUp();
+  // Long-press a book to run the same actions as the old Recent Books screen.
+  void showBookActionMenu(size_t row);
+  bool rowPath(size_t row, std::string& path, std::string& title);
+  void promptDeleteBook(const std::string& path, const std::string& title);
+  void promptRemoveBook(const std::string& path, const std::string& title);
+  void refreshAfterBookAction(bool rebuildIndex);
 
   Rect tabBandRect() const;
   Rect contentRect() const;

@@ -47,7 +47,7 @@ class FileBrowserActionActivity final : public Activity {
 
   FileBrowserActionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title,
                             std::vector<MenuItem> items, bool ignoreInitialConfirmRelease = false,
-                            bool ignoreOpeningTouchRelease = true);
+                            bool ignoreOpeningTouchRelease = true, bool dismissOnOutsideTouch = true);
 
   void onEnter() override;
   void loop() override;
@@ -62,6 +62,7 @@ class FileBrowserActionActivity final : public Activity {
   OptionPopup optionPopup;
   bool ignoreConfirmRelease = false;
   bool ignoreOpeningTouchRelease = true;
+  bool dismissOnOutsideTouch = true;
   bool ignoreTouchRelease = false;
   bool selectionMade = false;
 };

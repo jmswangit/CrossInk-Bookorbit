@@ -7,18 +7,20 @@
 FileBrowserActionActivity::FileBrowserActionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                      std::string title, std::vector<MenuItem> items,
                                                      const bool ignoreInitialConfirmRelease,
-                                                     const bool ignoreOpeningTouchRelease)
+                                                     const bool ignoreOpeningTouchRelease,
+                                                     const bool dismissOnOutsideTouch)
     : Activity("FileBrowserAction", renderer, mappedInput),
       title(std::move(title)),
       items(std::move(items)),
       ignoreConfirmRelease(ignoreInitialConfirmRelease),
-      ignoreOpeningTouchRelease(ignoreOpeningTouchRelease) {}
+      ignoreOpeningTouchRelease(ignoreOpeningTouchRelease),
+      dismissOnOutsideTouch(dismissOnOutsideTouch) {}
 
 void FileBrowserActionActivity::onEnter() {
   Activity::onEnter();
   // Context menus are modal overlays: a tap on the dimmed image/list area
   // should close the menu instead of requiring the Back button.
-  optionPopup.setDismissOnOutsideTouchDown(true);
+  optionPopup.setDismissOnOutsideTouchDown(dismissOnOutsideTouch);
   // List long-presses open this activity while the finger is still down. The
   // image viewer instead opens it after consuming a completed photo tap, so
   // it must accept the first deliberate option tap.

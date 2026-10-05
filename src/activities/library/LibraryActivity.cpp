@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 #include <variant>
@@ -23,6 +24,11 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "RecentBooksStore.h"
+#include "activities/home/BookActions.h"
+#include "activities/home/FileBrowserActionActivity.h"
+#include "activities/reader/EpubReaderActivity.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "activities/util/OptionSelectionActivity.h"
 #include "components/CompactHeader.h"
@@ -419,6 +425,163 @@ void LibraryActivity::goUp() {
   onGoHome();
 }
 
+bool LibraryActivity::rowPath(const size_t row, std::string& path, std::string& title) {
+  if (mode == Mode::Groups) return false;
+  uint16_t ordinal = 0xFFFF;
+  if (!rowOrdinal(row, ordinal)) return false;
+  library::ClixRecord record{};
+  if (!index.readRecord(ordinal, record)) return false;
+  if (!index.readPath(record, path)) return false;
+  if (!index.readTitle(record, title)) index.readName(record, title);
+  return true;
+}
+
+void LibraryActivity::refreshAfterBookAction(const bool rebuildIndex) {
+  if (rebuildIndex) {
+    library::markLibraryIndexDirty();
+    indexReady = false;
+    if (index.isOpen()) index.close();
+  }
+  ensureIndex();
+  rebuildContent();
+  if (rowCount() > 0 && selectorIndex >= rowCount()) selectorIndex = rowCount() - 1;
+  requestUpdate();
+}
+
+void LibraryActivity::promptDeleteBook(const std::string& path, const std::string& title) {
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, std::string(tr(STR_DELETE)) + "? ", title),
+      [this, path](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          BookActions::clearFileMetadata(path);
+          if (!Storage.remove(path.c_str())) {
+            LOG_ERR("LIBUI", "Failed to delete file: %s", path.c_str());
+          } else {
+            RECENT_BOOKS.removeByPath(path);
+            refreshAfterBookAction(true);
+            return;
+          }
+        }
+        refreshAfterBookAction(false);
+      });
+}
+
+void LibraryActivity::promptRemoveBook(const std::string& path, const std::string& title) {
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_REMOVE_FROM_RECENTS), title),
+      [this, path](const ActivityResult& result) {
+        if (!result.isCancelled) RECENT_BOOKS.removeByPath(path);
+        refreshAfterBookAction(false);
+      });
+}
+
+void LibraryActivity::showBookActionMenu(const size_t row) {
+  std::string path;
+  std::string title;
+  if (!rowPath(row, path, title)) return;
+
+  std::vector<FileBrowserActionActivity::MenuItem> items =
+      BookActions::buildBookActionItems(path, /*includeRemoveFromRecents=*/true);
+
+  startActivityForResult(
+      std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, title, std::move(items),
+                                                  /*ignoreInitialConfirmRelease=*/true,
+                                                  /*ignoreOpeningTouchRelease=*/true,
+                                                  /*dismissOnOutsideTouch=*/false),
+      [this, path, title](const ActivityResult& result) {
+        // The menu can close by action, Back, or an outside tap; re-arm the
+        // long-press guard so the next cover long-press works.
+        gridLongPressFired = false;
+        if (result.isCancelled) {
+          requestUpdate();
+          return;
+        }
+        const auto* actionResult = std::get_if<FileBrowserActionResult>(&result.data);
+        if (!actionResult) {
+          LOG_ERR("LIBUI", "Book action result missing");
+          requestUpdate();
+          return;
+        }
+        switch (static_cast<FileBrowserAction>(actionResult->action)) {
+          case FileBrowserAction::Delete:
+            promptDeleteBook(path, title);
+            return;
+          case FileBrowserAction::DeleteCache:
+            startActivityForResult(
+                std::make_unique<ConfirmationActivity>(
+                    renderer, mappedInput, BookActions::confirmationHeading(StrId::STR_DELETE_CACHE), title),
+                [this, path](const ActivityResult& confirmation) {
+                  if (!confirmation.isCancelled && BookActions::clearBookCache(path)) {
+                    BookActions::drawToast(renderer, tr(STR_CACHE_CLEARED));
+                    delay(600);
+                  }
+                  refreshAfterBookAction(false);
+                });
+            return;
+          case FileBrowserAction::DeleteStats:
+            startActivityForResult(
+                std::make_unique<ConfirmationActivity>(
+                    renderer, mappedInput, BookActions::confirmationHeading(StrId::STR_DELETE_BOOK_STATS), title),
+                [this, path](const ActivityResult& confirmation) {
+                  if (!confirmation.isCancelled && BookActions::deleteBookStats(path)) {
+                    BookActions::drawToast(renderer, tr(STR_BOOK_STATS_DELETED));
+                    delay(600);
+                  }
+                  refreshAfterBookAction(false);
+                });
+            return;
+          case FileBrowserAction::ResetReaderSettings:
+            startActivityForResult(
+                std::make_unique<ConfirmationActivity>(
+                    renderer, mappedInput, BookActions::confirmationHeading(StrId::STR_RESET_BOOK_READER_SETTINGS),
+                    title),
+                [this, path](const ActivityResult& confirmation) {
+                  if (!confirmation.isCancelled && BookActions::resetBookReaderSettings(path)) {
+                    BookActions::drawToast(renderer, tr(STR_BOOK_READER_SETTINGS_RESET));
+                    delay(600);
+                  }
+                  refreshAfterBookAction(false);
+                });
+            return;
+          case FileBrowserAction::ToggleCompleted: {
+            bool completed = false;
+            if (BookActions::toggleBookCompleted(path, title, completed)) {
+              BookActions::drawToast(renderer, completed ? tr(STR_MARKED_FINISHED) : tr(STR_MARKED_UNFINISHED));
+              delay(600);
+            }
+            refreshAfterBookAction(true);
+            return;
+          }
+          case FileBrowserAction::EpubRenderMode: {
+            const uint8_t currentIndex = BookActions::epubRenderModeDisplayIndex(
+                EpubReaderActivity::loadBookRenderMode(path));
+            startActivityForResult(
+                std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "LibraryEpubRenderMode",
+                                                          StrId::STR_EPUB_RENDER_MODE, BookActions::epubRenderModeOptions(),
+                                                          currentIndex),
+                [this, path](const ActivityResult& selectionResult) {
+                  if (!selectionResult.isCancelled) {
+                    const auto* selection = std::get_if<OptionSelectionResult>(&selectionResult.data);
+                    if (selection != nullptr &&
+                        !EpubReaderActivity::saveBookRenderMode(
+                            path, BookActions::epubRenderModeForDisplayIndex(selection->index))) {
+                      LOG_ERR("LIBUI", "Failed to save render mode for: %s", path.c_str());
+                    }
+                  }
+                  refreshAfterBookAction(false);
+                });
+            return;
+          }
+          case FileBrowserAction::RemoveFromRecents:
+            promptRemoveBook(path, title);
+            return;
+          default:
+            requestUpdate();
+            return;
+        }
+      });
+}
+
 void LibraryActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
   auto* self = static_cast<LibraryActivity*>(user);
   if (event.value < 0) return;
@@ -426,7 +589,10 @@ void LibraryActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
   if (row >= self->rowCount()) return;
   self->selectorIndex = row;
   self->app.clearTapFlash();
-  self->activateSelected();
+  if (event.longPress)
+    self->showBookActionMenu(row);
+  else
+    self->activateSelected();
 }
 
 void LibraryActivity::onEnter() {
@@ -437,6 +603,8 @@ void LibraryActivity::onEnter() {
   uiReady = false;
   backLongPressFired = false;
   confirmLongPressFired = false;
+  gridLongPressFired = false;
+  gridPressActive = false;
   tab = Tab::Recent;
   reversed = false;
   query.clear();
@@ -855,6 +1023,37 @@ void LibraryActivity::loop() {
     return;
   }
 
+  // Grid long-press: time the hold here so it does not depend on the SDK's
+  // long-press latch (which stays spent after a menu is dismissed by an outside
+  // tap). suppressNextTouchTap() keeps the lift from opening the book.
+  if (mode == Mode::Grid && mappedInput.hasTouchHardware()) {
+    int hx = 0;
+    int hy = 0;
+    if (mappedInput.isScreenTouchHeld(hx, hy)) {
+      if (!gridPressActive) {
+        gridPressActive = true;
+        gridLongPressFired = false;
+        gridPressStartMs = millis();
+        gridPressX = hx;
+        gridPressY = hy;
+      }
+      if (!gridLongPressFired && millis() - gridPressStartMs >= LONG_PRESS_MS) {
+        const int hit = gridIndexFromPoint(gridPressX, gridPressY);
+        if (hit >= 0) {
+          selectorIndex = static_cast<size_t>(hit);
+          mappedInput.suppressNextTouchTap();
+          gridLongPressFired = true;
+          requestUpdate();
+          showBookActionMenu(selectorIndex);
+          return;
+        }
+      }
+      return;
+    }
+    gridPressActive = false;
+    gridLongPressFired = false;
+  }
+
   if (uiReady || mode == Mode::Grid) {
     const fui::InputSnapshot snap = touchSnapshotFrom(mappedInput);
     if (snap.touchReleased && snap.touchX >= 0) {
@@ -1007,7 +1206,7 @@ void LibraryActivity::buildListScreen(UiApp::ScreenType& screen) {
   props.itemsWindowFirst = static_cast<uint16_t>(topIndex);
   props.itemsWindowCount = static_cast<uint16_t>(drawCount);
   props.action = ACTION_ROW;
-  props.inputMask = static_cast<uint16_t>(fui::InputTouch);
+  props.inputMask = static_cast<uint16_t>(fui::InputTouch | fui::InputLongPress);
   props.valueInset = 8;
   props.balanceWrappedLabelWithValue = false;
   props.partialTrailingRow = false;
@@ -1064,18 +1263,24 @@ void LibraryActivity::render(RenderLock&&) {
                       EpdFontFamily::REGULAR);
   }
   const int total = static_cast<int>(rowCount());
-  if (total > 0 && mode != Mode::Groups) {
+  const int perPage = mode == Mode::Grid ? booksPerPage() : std::max(1, visibleRows);
+  if (total > 0) {
     char countBuf[48];
-    snprintf(countBuf, sizeof(countBuf), tr(STR_BOOKS_COUNT), static_cast<int>(selectorIndex) + 1, total);
-    const int countW = renderer.getTextWidth(SMALL_FONT_ID, countBuf, EpdFontFamily::REGULAR);
-    renderer.drawText(SMALL_FONT_ID, renderer.getScreenWidth() - metrics.contentSidePadding - countW, statusY,
-                      countBuf, true, EpdFontFamily::REGULAR);
-  } else if (total > 0) {
-    char countBuf[48];
-    snprintf(countBuf, sizeof(countBuf), "%d", total);
-    const int countW = renderer.getTextWidth(SMALL_FONT_ID, countBuf, EpdFontFamily::REGULAR);
-    renderer.drawText(SMALL_FONT_ID, renderer.getScreenWidth() - metrics.contentSidePadding - countW, statusY,
-                      countBuf, true, EpdFontFamily::REGULAR);
+    if (mode != Mode::Groups) {
+      snprintf(countBuf, sizeof(countBuf), tr(STR_BOOKS_COUNT), static_cast<int>(selectorIndex) + 1, total);
+    } else {
+      snprintf(countBuf, sizeof(countBuf), "%d", total);
+    }
+    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, statusY, countBuf, true, EpdFontFamily::REGULAR);
+  }
+  if (total > 0 && perPage > 0) {
+    const int pages = (total + perPage - 1) / perPage;
+    const int page = std::min(pages, static_cast<int>(selectorIndex) / perPage + 1);
+    char pageBuf[32];
+    snprintf(pageBuf, sizeof(pageBuf), tr(STR_LIBRARY_PAGE), page, pages);
+    const int pageW = renderer.getTextWidth(SMALL_FONT_ID, pageBuf, EpdFontFamily::REGULAR);
+    renderer.drawText(SMALL_FONT_ID, renderer.getScreenWidth() - metrics.contentSidePadding - pageW, statusY, pageBuf,
+                      true, EpdFontFamily::REGULAR);
   }
 
   const auto labels =

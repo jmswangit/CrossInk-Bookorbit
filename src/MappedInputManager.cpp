@@ -1223,11 +1223,16 @@ void MappedInputManager::simulatorClearInputFrame() {
   simulatorPressed.fill(false);
   simulatorReleased.fill(false);
 #if CROSSINK_APP_CAP_TOUCH
-  const bool suppressedContactReleased = suppressSimulatedTouchContact && simulatorTouch.releasedThisFrame;
+  // Clear the suppression latch as soon as no contact is active. Relying only
+  // on the release edge left it stuck when a menu dismissed by an outside tap
+  // (the release edge is consumed while the child activity is on top), which
+  // then disabled every held/long-press query until a reboot.
+  const bool suppressedContactFinished =
+      suppressSimulatedTouchContact && (simulatorTouch.releasedThisFrame || !simulatorTouch.pressed);
   simulatorTouch.pressedThisFrame = false;
   simulatorTouch.releasedThisFrame = false;
   simulatorTouch.longPressFired = false;
-  if (suppressedContactReleased) {
+  if (suppressedContactFinished) {
     suppressSimulatedTouchContact = false;
     suppressTouchTap = false;
   }

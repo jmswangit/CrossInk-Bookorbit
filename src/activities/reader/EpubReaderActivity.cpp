@@ -39,6 +39,7 @@
 #include "BookStatsTracking.h"
 #include "ChapterXPathResolver.h"
 #include "ClipSelectionActivity.h"
+#include "ClippingConfirmActivity.h"
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -5241,49 +5242,70 @@ void EpubReaderActivity::startClipSelection(const DictionaryClippingRequest* dic
                                                     chapterTitle = std::move(chapterTitle),
                                                     clippingLayoutSignature](const ActivityResult& result) {
     MemoryBudget::logHeapShape("clip.child_destroyed");
-    const char* clippingFeedback = nullptr;
-    bool saved = false;
-    if (!result.isCancelled) {
-      const auto& clip = std::get<ClippingResult>(result.data);
-      if (!clip.text.empty()) {
-        const size_t clippingIndex = CLIPPINGS.clippingCount();
-        const auto addResult = CLIPPINGS.addClipping(
-            static_cast<uint16_t>(currentSpineIndex), clip.sectionPage, clip.endSectionPage, clip.sectionPageCount,
-            clip.startPageWordIndex, clip.endPageWordIndex, clip.wordCount, chapterTitle.c_str(), clip.paragraphIndex,
-            clip.text, clip.tableSelection, clippingLayoutSignature);
-        bool exported = false;
-        if (addResult == ClippingStore::AddResult::Added) {
-          recordAnnotationPosition(clippingIndex, clip.paragraphIndex, clip.text);
-          exported = ClippingsManager::saveClipping(bookTitle, author, chapterTitle,
-                                                    static_cast<int>(clip.sectionPage) + 1, clip.text);
-          if (!exported && !CLIPPINGS.removeClippingAt(clippingIndex)) {
-            LOG_ERR("CLIP", "Failed to roll back clipping after export failure");
+    if (result.isCancelled) {
+      finishClippingFlow(nullptr, false);
+      return;
+    }
+    const auto& clip = std::get<ClippingResult>(result.data);
+    if (clip.text.empty()) {
+      finishClippingFlow(nullptr, false);
+      return;
+    }
+    // Show the whole selected text before anything is written. Cancel drops the
+    // selection entirely, so nothing is stored and BookOrbit sync never sees it.
+    auto confirm = makeUniqueNoThrow<ClippingConfirmActivity>(renderer, mappedInput, clip.text);
+    if (!confirm) {
+      finishClippingFlow(nullptr, false);
+      return;
+    }
+    startActivityForResult(
+        std::move(confirm),
+        [this, clip, bookTitle, author, chapterTitle, clippingLayoutSignature](const ActivityResult& confirmResult) {
+          const char* clippingFeedback = nullptr;
+          bool saved = false;
+          if (!confirmResult.isCancelled) {
+            const size_t clippingIndex = CLIPPINGS.clippingCount();
+            const auto addResult = CLIPPINGS.addClipping(
+                static_cast<uint16_t>(currentSpineIndex), clip.sectionPage, clip.endSectionPage, clip.sectionPageCount,
+                clip.startPageWordIndex, clip.endPageWordIndex, clip.wordCount, chapterTitle.c_str(),
+                clip.paragraphIndex, clip.text, clip.tableSelection, clippingLayoutSignature);
+            bool exported = false;
+            if (addResult == ClippingStore::AddResult::Added) {
+              recordAnnotationPosition(clippingIndex, clip.paragraphIndex, clip.text);
+              exported = ClippingsManager::saveClipping(bookTitle, author, chapterTitle,
+                                                        static_cast<int>(clip.sectionPage) + 1, clip.text);
+              if (!exported && !CLIPPINGS.removeClippingAt(clippingIndex)) {
+                LOG_ERR("CLIP", "Failed to roll back clipping after export failure");
+              }
+            }
+            saved = addResult == ClippingStore::AddResult::Added && exported;
+            clippingFeedback = addResult == ClippingStore::AddResult::LimitReached ? tr(STR_CLIPPING_LIMIT_REACHED)
+                               : saved                                             ? tr(STR_CLIPPING_SAVED)
+                                                                                   : tr(STR_CLIPPING_FAILED);
           }
-        }
-        saved = addResult == ClippingStore::AddResult::Added && exported;
-        clippingFeedback = addResult == ClippingStore::AddResult::LimitReached ? tr(STR_CLIPPING_LIMIT_REACHED)
-                           : saved                                             ? tr(STR_CLIPPING_SAVED)
-                                                                               : tr(STR_CLIPPING_FAILED);
-      }
-    }
-    resumeReadingPaceTimer("clip_selection_return");
-    releaseReaderSdFontCachesForLowMemory(renderer, "CLIP", "clipping selection exit");
-    MemoryBudget::logHeapShape("clip.after_font_release");
-    pendingHeapShapeReaderRedrawStages.fetch_or(HEAP_SHAPE_REDRAW_CLIP, std::memory_order_relaxed);
-    if (clippingFeedback) {
-#if CROSSINK_APP_CAP_TOUCH
-      if (saved && mappedInput.hasTouchHardware() && requestUpdateAndWait() != RequestUpdateResult::Rendered) {
-        LOG_ERR("CLIP", "Could not render saved highlight before clipping toast");
-      }
-#endif
-      {
-        RenderLock lock(*this);
-        drawToast(renderer, clippingFeedback);
-      }
-      delay(1000);
-    }
-    requestUpdate();
+          finishClippingFlow(clippingFeedback, saved);
+        });
   });
+}
+
+void EpubReaderActivity::finishClippingFlow(const char* clippingFeedback, const bool saved) {
+  resumeReadingPaceTimer("clip_selection_return");
+  releaseReaderSdFontCachesForLowMemory(renderer, "CLIP", "clipping selection exit");
+  MemoryBudget::logHeapShape("clip.after_font_release");
+  pendingHeapShapeReaderRedrawStages.fetch_or(HEAP_SHAPE_REDRAW_CLIP, std::memory_order_relaxed);
+  if (clippingFeedback) {
+#if CROSSINK_APP_CAP_TOUCH
+    if (saved && mappedInput.hasTouchHardware() && requestUpdateAndWait() != RequestUpdateResult::Rendered) {
+      LOG_ERR("CLIP", "Could not render saved highlight before clipping toast");
+    }
+#endif
+    {
+      RenderLock lock(*this);
+      drawToast(renderer, clippingFeedback);
+    }
+    delay(1000);
+  }
+  requestUpdate();
 }
 
 void EpubReaderActivity::resetReadingPaceData() {

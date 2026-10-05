@@ -396,6 +396,11 @@ class EpubReaderActivity final : public Activity {
   // and the caller must recompose the page.
   enum class PositionMint : uint8_t { Skipped, Deferred, Done };
 
+  // Shared tail of the clip flow: pace timer, font cache release and the saved
+  // toast. Runs after the pre-save confirmation so BookOrbit sync sees the same
+  // record whether the highlight was saved directly or via the confirm screen.
+  void finishClippingFlow(const char* feedback, bool saved);
+
   // Mints the BookOrbit xpointer for a highlight just added to the clipping store. Done here
   // rather than at sync time because it walks the chapter's HTML structure, which is nearly
   // free while this activity already has the chapter open (see BookOrbitAnnotationStore).
