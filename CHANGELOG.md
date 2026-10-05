@@ -5,13 +5,34 @@ records only its own additions. Each release states the CrossInk version it is b
 on; for everything inherited from upstream, see the
 [CrossInk changelog](https://github.com/uxjulia/CrossInk/blob/main/CHANGELOG.md).
 
-## [Unreleased]
+## [v1.6.1+bookorbit.1] - 2026-10-05
 
-Based on CrossInk v1.6.0.
+Based on CrossInk v1.6.1.
+
+### Added
+
+- The Cover Grid home screen, new in CrossInk v1.6.1 on devices with PSRAM, has a BookOrbit tab once an account is set up, next to Library and OPDS.
+- The date can be shown on devices without a clock chip, like the clock already could. CrossInk v1.6.1 lets you place a clock and a date in the status bars; both are offered on every device, and the date appears once the device has set its time over Wi-Fi.
+
+### Changed
+
+- When BookOrbit Sync asks which position to keep, it now shows this device and the server as two cards, each with its percentage, a progress bar, the page and the chapter, and marks the one that is further along as "Ahead". This is the layout CrossInk v1.6.1 gave its KOReader sync.
+- A book downloaded from the BookOrbit catalog only takes its place on the card once the download is complete and the file opens as an EPUB. Until then it is kept aside, so an interrupted download no longer leaves a truncated book behind, and a download the card has no room for stops before it starts, with "Insufficient SD card space".
+- Books downloaded or deleted from the BookOrbit catalog show up in the new Library right away, without rebuilding its index by hand.
+- BookOrbit Sync is on the Location tab of the new reader menu on devices with buttons, and stays in Sync & Transfer on touch devices.
+- Turning reading stats off for a book, new in CrossInk v1.6.1, also stops recording its reading sessions for BookOrbit.
+- On devices without a clock chip, the offer to keep the clock running through sleep now appears when you add a clock or a date to a status bar, since the Hide Clock setting it used to follow is gone.
 
 ### Fixed
 
 - Check for Updates no longer crashes and restarts the X4 Pro while it connects to Wi-Fi ([#88](https://github.com/agosez/CrossInk-Bookorbit/issues/88)).
+- Once this version is installed, Check for Updates says the device is up to date instead of offering the version it already runs. Since v1.5.0+bookorbit.1 an up-to-date device was told its own release was a new version, and could install it again.
+- Shortcuts set to BookOrbit Sync keep working after this update. CrossInk v1.6.1 reuses the numbers they were saved under for its Library shortcut, so they would have opened the Library instead; they are carried over the first time the device starts.
+- BookOrbit Sync no longer restarts the device when the server answers with something far larger than expected, such as an error page from a proxy. The sync stops with an error instead.
+- A re-download from the BookOrbit catalog can no longer cost you the book when the very last step fails: the copy you had is put back.
+- Reading sessions recorded for BookOrbit are no longer lost when the reader is left through a restart, for instance when starting File Transfer from a book.
+- Renaming a book from the web file manager keeps it marked as on the device in the BookOrbit catalog, as renaming it on the device already did.
+- A book that has highlights can be renamed again, from the File Browser and from the web file manager. Since v1.6.0+bookorbit.1 the rename was refused with an error, because the highlights are stored under the book's contents rather than its name and the rename tried to move them.
 
 ## [v1.6.0+bookorbit.2] - 2026-10-01
 

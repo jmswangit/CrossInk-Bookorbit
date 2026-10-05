@@ -51,6 +51,7 @@ dist-publish/
 /dependencies.lock
 /sdkconfig.*
 
+lib/ScalableFont/*.generated.h
 # Integration test generated artifacts
 test/integration/library-dock/
 test/integration/library/

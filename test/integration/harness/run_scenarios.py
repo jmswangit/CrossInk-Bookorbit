@@ -40,7 +40,7 @@ SIM_MAC = bytes([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01])
 SIM_DEVICE_ID = "crossink-" + SIM_MAC.hex()
 
 SHORT_PWRBTN_SLEEP = 1  # CrossPointSettings::SHORT_PWRBTN::SLEEP
-SHORT_PWRBTN_BOOKORBIT_SYNC = 33  # CrossPointSettings::SHORT_PWRBTN::BOOKORBIT_SYNC
+SHORT_PWRBTN_BOOKORBIT_SYNC = 37  # CrossPointSettings::SHORT_PWRBTN::BOOKORBIT_SYNC
 SYNC_BEHAVIOR_SMART = 1
 SYNC_MARKER_MAGIC = 0x424F5359  # "BOSY", BookOrbitSyncActivity's SYNC_MARKER_MAGIC
 
@@ -335,10 +335,15 @@ class SimFs:
 
 
 def run_simulator(fs: SimFs, input_script: str, choice: str, timeout_s: int,
-                  verbose: bool, wake_into_reader: bool = False) -> str:
+                  verbose: bool, wake_into_reader: bool = False,
+                  after_reboot_script: str | None = None) -> str:
     env = os.environ.copy()
     env.setdefault("SDL_VIDEODRIVER", "dummy")
     env["CROSSPOINT_SIM_INPUT_SCRIPT"] = input_script
+    if after_reboot_script is not None:
+        # The simulator drops the script when the firmware restarts; this one drives
+        # the process the first restart launches, and only that one.
+        env["CROSSPOINT_SIM_INPUT_SCRIPT_AFTER_REBOOT"] = after_reboot_script
     if wake_into_reader:
         # A power-button wake: with set_asleep_in_book, boot resumes the reader.
         env["CROSSPOINT_SIM_WAKE_REASON"] = "power"
@@ -556,12 +561,11 @@ def scenario_sleep_sync_cancel(verbose: bool) -> None:
         fs.enable_sync_on_sleep()
         sim_path = fs.add_book(source)
         fs.set_open_book(sim_path)
-        # The script replays from t=0 in every process the silent restarts exec: the
-        # 300 ms press is ignored on the home screen (Power is locked out for 2 s after
-        # boot) and lands inside the sleep sync's boot; the 2500 ms press puts the device
-        # to sleep. Woken, the device sleeps again, so the run only ends at the timeout.
-        output = run_simulator(fs, input_script="300:POWER:600;2500:POWER:120", choice="none",
-                               timeout_s=14, verbose=verbose)
+        # The 2500 ms press puts the device to sleep, which restarts it into the sleep
+        # sync; the press of the second script lands inside that boot. Woken, the device
+        # stays on its home screen, so the run only ends at the timeout.
+        output = run_simulator(fs, input_script="2500:POWER:120", choice="none",
+                               timeout_s=14, verbose=verbose, after_reboot_script="300:POWER:600")
         assert "Restarting into the BookOrbit sleep sync" in output, "sleep did not hand over to the sleep sync"
         assert "Sleep sync cancelled: the device was woken" in output, "the press did not cancel the sleep sync"
         cancelled_at = output.index("Sleep sync cancelled")
@@ -1025,7 +1029,7 @@ def scenario_catalog_book_actions(verbose: bool) -> None:
     hold_first_book = "16000:CONFIRM:1500"  # past the 1 s threshold: opens the menu
     # The menu logs the FileBrowserAction it returns: without that, a hold that
     # simply downloaded on release (the old behaviour) would pass steps 1 and 2.
-    action_download, action_redownload, action_delete = 20, 21, 0
+    action_download, action_redownload, action_delete = 22, 23, 0
 
     with tempfile.TemporaryDirectory(prefix="crossink-integ-") as tmp:
         fs = SimFs(Path(tmp), manifest["kosync"], download_folder="/Downloads")

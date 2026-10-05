@@ -42,6 +42,7 @@ constexpr char firmwareAssetName[] = "firmware.bin";
 #endif
 
 constexpr char binSuffix[] = ".bin";
+constexpr char sanitisedForkBuildMarker[] = "-bookorbit.";
 constexpr size_t VERSION_SEGMENT_COUNT = 4;
 constexpr size_t OTA_PROGRESS_UPDATE_BYTES = 64 * 1024;
 constexpr size_t OTA_HASH_CHUNK = 4096;
@@ -72,9 +73,15 @@ bool startsWithNumberAfterOptionalV(const char* version) {
 // The counter inside semver build metadata: the first run of digits after '+'. Returns 0
 // when the version carries no metadata or no digits in it. `1.4.1+bookorbit.2-tiny` yields
 // 2, and the variant suffix the firmware appends to its own version is ignored.
+//
+// A release build names itself with that '+' replaced by '-': scripts/git_branch.py
+// sanitises the version it is handed, so the firmware built for the v1.6.1+bookorbit.1 tag
+// reports 1.6.1-bookorbit.1. That form has to yield the same counter, or an up-to-date
+// device reads its own counter as 0 and is offered the release it already runs.
 int parseForkBuild(const char* version) {
   if (version == nullptr) return 0;
   const char* p = strchr(version, '+');
+  if (p == nullptr) p = strstr(version, sanitisedForkBuildMarker);
   if (p == nullptr) return 0;
   while (*p != '\0' && !isDigit(*p)) ++p;
   int value = 0;
@@ -326,7 +333,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   };
 
   totalBytesReceived = 0;
-  LOG_DBG("OTA", "Checking for update (current: %s)", CROSSINK_VERSION);
+  LOG_DBG("OTA", "Checking for update (current: %s)", AppVersion::version());
 
   esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
   if (!client_handle) {
@@ -334,7 +341,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return INTERNAL_UPDATE_ERROR;
   }
 
-  esp_err = esp_http_client_set_header(client_handle, "User-Agent", "CrossInk-ESP32-" CROSSINK_VERSION);
+  esp_err = esp_http_client_set_header(client_handle, "User-Agent", AppVersion::userAgent());
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_http_client_set_header Failed : %s", esp_err_to_name(esp_err));
     esp_http_client_cleanup(client_handle);
@@ -383,12 +390,12 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 }
 
 bool OtaUpdater::isUpdateNewer() const {
-  if (!updateAvailable || latestVersion.empty() || latestVersion == CROSSINK_VERSION) {
+  if (!updateAvailable || latestVersion.empty() || latestVersion == AppVersion::version()) {
     return false;
   }
 
-  const int comparison = compareVersions(latestVersion.c_str(), CROSSINK_VERSION);
-  LOG_DBG("OTA", "Version comparison latest=%s current=%s result=%d", latestVersion.c_str(), CROSSINK_VERSION,
+  const int comparison = compareVersions(latestVersion.c_str(), AppVersion::version());
+  LOG_DBG("OTA", "Version comparison latest=%s current=%s result=%d", latestVersion.c_str(), AppVersion::version(),
           comparison);
   return comparison > 0;
 }

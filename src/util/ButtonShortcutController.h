@@ -39,7 +39,9 @@ class ButtonShortcutController {
     ToggleTouchscreen = 28,
     PreviousPage = 29,
     NearbyPositionSync = 30,
-    BookOrbitSync = 31,
+    Library = 31,
+    HomeReader = 32,
+    BookOrbitSync = 33,
   };
 
   enum class Event : uint8_t { None, QuickLockChanged, Screenshot, PageTurn, ConfiguredAction, TouchscreenEscapeHatch };
@@ -119,6 +121,17 @@ class ButtonShortcutController {
     const bool locked = quickLockState_.toggle(nowMs);
     quickLockTrigger_ = locked ? trigger : QuickLockTrigger::None;
     unlockTriggerReleased_ = !locked || !requireRelease;
+    sideUpUnlock_ = {};
+    sideDownUnlock_ = {};
+  }
+  bool tryUnlockSide(uint32_t nowMs, bool upPressed, bool upPressEdge, bool upReleaseEdge, bool upHasLongAction,
+                     bool downPressed, bool downPressEdge, bool downReleaseEdge, bool downHasLongAction,
+                     uint32_t longPressMs) {
+    if (!quickLockState_.isLocked()) return false;
+    return tryUnlockOneSide(nowMs, upPressed, upPressEdge, upReleaseEdge, upHasLongAction, longPressMs,
+                            QuickLockTrigger::SideUpShort, QuickLockTrigger::SideUpLong, sideUpUnlock_) ||
+           tryUnlockOneSide(nowMs, downPressed, downPressEdge, downReleaseEdge, downHasLongAction, longPressMs,
+                            QuickLockTrigger::SideDownShort, QuickLockTrigger::SideDownLong, sideDownUnlock_);
   }
   bool tryUnlockLongPower(uint32_t nowMs, bool longPowerPressed) {
     if (!quickLockState_.isLocked() || quickLockTrigger_ != QuickLockTrigger::LongPower) return false;
@@ -143,6 +156,33 @@ class ButtonShortcutController {
   }
 
  private:
+  struct SideUnlockState {
+    uint32_t pressedAt = 0;
+    bool tracking = false;
+    bool longHandled = false;
+  };
+
+  bool tryUnlockOneSide(uint32_t nowMs, bool pressed, bool pressEdge, bool releaseEdge, bool hasLongAction,
+                        uint32_t longPressMs, QuickLockTrigger shortTrigger, QuickLockTrigger longTrigger,
+                        SideUnlockState& state) {
+    if (pressEdge) {
+      state = {nowMs, true, false};
+    }
+    if (!state.tracking) return false;
+    if (!state.longHandled && hasLongAction && nowMs - state.pressedAt >= longPressMs && (pressed || releaseEdge)) {
+      state.longHandled = true;
+      if (quickLockTrigger_ == longTrigger) {
+        toggleQuickLock(nowMs, longTrigger);
+        return true;
+      }
+    } else if (releaseEdge && !state.longHandled && quickLockTrigger_ == shortTrigger) {
+      toggleQuickLock(nowMs, shortTrigger);
+      return true;
+    }
+    if (!pressed) state.tracking = false;
+    return false;
+  }
+
   bool canRunChordWhileQuickLocked(ChordAction action, QuickLockTrigger trigger) const {
     return action == ChordAction::QuickLock && quickLockTrigger_ == trigger;
   }
@@ -169,4 +209,6 @@ class ButtonShortcutController {
   bool powerDownChordActive_ = false;
   bool upDownChordActive_ = false;
   bool unlockTriggerReleased_ = true;
+  SideUnlockState sideUpUnlock_;
+  SideUnlockState sideDownUnlock_;
 };

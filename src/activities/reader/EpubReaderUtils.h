@@ -9,6 +9,7 @@
 #include <string>
 
 #include "util/BookContentId.h"
+#include "util/FileContentEquals.h"
 
 namespace EpubReaderUtils {
 
@@ -121,6 +122,10 @@ inline bool loadProgress(const Epub& epub, Progress& progress, const char* modul
 // Atomically replaces progressPath with data: write to .tmp, rotate the old file to .bak,
 // rename .tmp into place. The .bak survives as the recovery copy readProgressWithBackup uses.
 inline bool writeProgressFileAtomic(const std::string& progressPath, const uint8_t* data, const size_t dataSize) {
+  // Repeated menu, restart and exit saves can describe the same position.
+  // Compare the complete payload so relayout counts and text offsets still persist.
+  if (fileContentEquals("ERS", progressPath.c_str(), data, dataSize)) return true;
+
   const std::string tmpPath = progressPath + ".tmp";
   const std::string backupPath = progressPath + ".bak";
 

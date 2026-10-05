@@ -187,10 +187,12 @@ The X4 has no battery-backed RTC, so upstream's status-bar clock never appeared 
 its settings were hidden. Here the clock reads the device's system clock instead, which is
 refreshed from NTP on every WiFi connection.
 
-To turn it on, set **Settings → Display → Hide Clock** to `Never` (or `In reader` if you
-would rather not see it while reading), then set **Settings → System → Device → Clock UTC
-Offset** and **Clock Format**. The time appears once the device has been connected to WiFi at least
-once — before that there is nothing to display.
+To turn it on, open **Settings → Display → Status Bar** and put `Clock` in the left, center
+or right position; to see it while reading, add it to a reader bar under **Settings →
+Reader → Status Bars**. `Date` works the same way. Then set **Settings → System → Device →
+Clock UTC Offset** and **Clock Format**. The time appears once the device has been connected
+to WiFi at least once — before that there is nothing to display. A clock you had turned on
+with the former **Hide Clock** setting is carried over.
 
 ### Keeping the time through sleep, and what it costs
 

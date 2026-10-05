@@ -1,5 +1,6 @@
 #include "BookOrbitSyncClient.h"
 
+#include <AppVersion.h>
 #include <ArduinoJson.h>
 #ifdef SIMULATOR
 #include <ArduinoJsonStringCompat.h>
@@ -142,6 +143,24 @@ BookOrbitSyncClient::Error validateAuthResponse(const char* body) {
   return BookOrbitSyncClient::OK;
 }
 
+// Why the last request's reply was not read to its end, if it was not (see
+// sendBookOrbitRequest). Never set on the simulator, whose HTTP client buffers on a host heap.
+enum class BodyRefusal : uint8_t { None, TooLarge, LowMemory };
+BodyRefusal s_lastBodyRefusal = BodyRefusal::None;
+
+// What a request that returned no usable status means to its caller.
+BookOrbitSyncClient::Error transportFailure() {
+  switch (s_lastBodyRefusal) {
+    case BodyRefusal::LowMemory:
+      return BookOrbitSyncClient::LOW_MEMORY;
+    case BodyRefusal::TooLarge:
+      return BookOrbitSyncClient::INVALID_AUTH_RESPONSE;
+    case BodyRefusal::None:
+      break;
+  }
+  return BookOrbitSyncClient::NETWORK_ERROR;
+}
+
 // See the identical comment in KOReaderSyncClient.cpp: TLS handshakes on the ESP32-C3
 // collectively consume tens of KB of heap, so we refuse to even attempt one below this
 // floor rather than risk an aggregate-exhaustion allocation failure mid-handshake.
@@ -241,11 +260,27 @@ void logHeapStats(const char* phase, const char* url = nullptr) {
 //
 // Returns the HTTP status, or a negative value when the transport itself failed. The
 // response body, if any, lands in outBody.
+//
+// The body is read through a bounded sink rather than the client's own buffer. That buffer
+// is a std::string: its growth doubles, the caller then had to copy it, and with exceptions
+// disabled an allocation it cannot make calls abort() -- with the TLS session still open,
+// when the heap is at its tightest. CrossInk v1.6.1 capped the kosync auth reply for this
+// reason; here every reply takes the one path. It lands straight in outBody, grown in exact
+// steps the heap is asked about first, so a reply this device cannot hold ends the request
+// (transportFailure() then says why) instead of the firmware.
+constexpr int BODY_REFUSED = -2;
+constexpr size_t RESPONSE_GROWTH_STEP = 1024;
+// Left as one contiguous block after a growth step: room for a TLS record in flight. Kept
+// that small on purpose, so that a heap a short reply fitted in before still takes it.
+constexpr uint32_t RESPONSE_HEAP_MARGIN = HTTP_BUF_SIZE;
+constexpr size_t NO_BODY_LIMIT = SIZE_MAX;
+// The auth reply is a small JSON object. Anything larger is an error page or the wrong server.
+constexpr size_t MAX_AUTH_RESPONSE_BYTES = 4096;
 // Non-null while a BookOrbitSyncClient::Session is alive; requests then share its socket.
 std::unique_ptr<freeink::SecureHttpClient> s_session;
 
 void configureClient(freeink::SecureHttpClient& http, const bool reuse) {
-  http.setUserAgent("CrossInk-ESP32-" CROSSINK_VERSION);
+  http.setUserAgent(AppVersion::userAgent());
   http.setTimeout(15000);
   http.setReuse(reuse);
   // Unverified, like every other network path in this firmware: wolfSSL is the only
@@ -255,8 +290,10 @@ void configureClient(freeink::SecureHttpClient& http, const bool reuse) {
   http.setInsecure();
 }
 
-int sendBookOrbitRequest(const char* method, const std::string& url, const JsonBody* payload, std::string& outBody) {
+int sendBookOrbitRequest(const char* method, const std::string& url, const JsonBody* payload, std::string& outBody,
+                         const size_t maxBodyBytes = NO_BODY_LIMIT) {
   outBody.clear();
+  s_lastBodyRefusal = BodyRefusal::None;
   const bool pooled = s_session != nullptr;
   freeink::SecureHttpClient oneShot;
   freeink::SecureHttpClient& http = pooled ? *s_session : oneShot;
@@ -276,11 +313,42 @@ int sendBookOrbitRequest(const char* method, const std::string& url, const JsonB
   if (payload != nullptr) {
     http.addHeader("Content-Type", "application/json");
   }
-  const int code = payload != nullptr ? http.sendRequest(method, payload->bytes(), payload->length()) : http.GET();
-  outBody = http.getString();
+  const auto sink = [&http, &outBody, maxBodyBytes](const uint8_t* data, const size_t len) {
+    const size_t needed = outBody.size() + len;
+    if (needed > maxBodyBytes) {
+      s_lastBodyRefusal = BodyRefusal::TooLarge;
+      return false;
+    }
+    if (needed > outBody.capacity()) {
+      // The whole body in one allocation when the server announced its length, a step otherwise.
+      const size_t announced = std::min(http.getContentLength(), maxBodyBytes);
+      const size_t target = announced >= needed
+                                ? announced
+                                : (needed + RESPONSE_GROWTH_STEP - 1) / RESPONSE_GROWTH_STEP * RESPONSE_GROWTH_STEP;
+      if (ESP.getMaxAllocHeap() < target + 1 + RESPONSE_HEAP_MARGIN) {
+        s_lastBodyRefusal = BodyRefusal::LowMemory;
+        return false;
+      }
+      outBody.reserve(target);
+    }
+    outBody.append(reinterpret_cast<const char*>(data), len);
+    return true;
+  };
+  int code = http.sendRequest(method, payload != nullptr ? payload->bytes() : nullptr,
+                              payload != nullptr ? payload->length() : 0, sink);
+  const bool bodyRefused = s_lastBodyRefusal != BodyRefusal::None;
+  if (bodyRefused) {
+    LOG_ERR("BookOrbit", "Reply not read (HTTP %d): %s (%u bytes in, announced %u, heap: %u free, %u max alloc)", code,
+            s_lastBodyRefusal == BodyRefusal::TooLarge ? "larger than this request allows" : "not enough memory",
+            static_cast<unsigned>(outBody.size()), static_cast<unsigned>(http.getContentLength()),
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    outBody.clear();
+    outBody.shrink_to_fit();
+    code = BODY_REFUSED;
+  }
   // An HTTP status, even an error one, proves the session's handshake is up and paid
-  // for; a transport failure may have closed the socket, so the next request assumes
-  // it pays a new one.
+  // for; a transport failure may have closed the socket, and stopping a reply short
+  // always does, so the next request assumes it pays a new one.
   if (pooled) {
     s_sessionHandshakePaid = code > 0;
   }
@@ -366,16 +434,16 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::authenticate() {
   http.end();
 
   if (httpCode == 401) return AUTH_FAILED;
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   return SERVER_ERROR;
 #else
   std::string body;
-  const int httpCode = sendBookOrbitRequest("GET", url, nullptr, body);
+  const int httpCode = sendBookOrbitRequest("GET", url, nullptr, body, MAX_AUTH_RESPONSE_BYTES);
   lastHttpCode = httpCode > 0 ? httpCode : 0;
   lastTransportError = httpCode < 0 ? httpCode : 0;
   LOG_DBG("BookOrbit", "Auth response: %d", httpCode);
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode == 200) return validateAuthResponse(body.c_str());
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
@@ -446,7 +514,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::getProgress(const std::string& d
 
   if (httpCode == 401) return AUTH_FAILED;
   if (httpCode == 404) return NOT_FOUND;
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   return SERVER_ERROR;
 #else
   std::string body;
@@ -455,7 +523,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::getProgress(const std::string& d
   lastTransportError = httpCode < 0 ? httpCode : 0;
   LOG_DBG("BookOrbit", "Get progress response: %d", httpCode);
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
 
   if (httpCode == 200 && !body.empty()) {
     JsonDocument doc;
@@ -542,7 +610,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::updateProgress(const KOReaderPro
 
   if (httpCode == 200 || httpCode == 202) return OK;
   if (httpCode == 401) return AUTH_FAILED;
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   return SERVER_ERROR;
 #else
   LOG_DBG("BookOrbit", "PUT body bytes=%u", static_cast<unsigned>(body.length()));
@@ -552,7 +620,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::updateProgress(const KOReaderPro
   lastTransportError = httpCode < 0 ? httpCode : 0;
   LOG_DBG("BookOrbit", "Update progress response: %d", httpCode);
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode == 200 || httpCode == 202) return OK;
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
@@ -638,7 +706,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::uploadPageStats(const std::strin
 
   if (httpCode >= 200 && httpCode < 300) return OK;
   if (httpCode == 401) return AUTH_FAILED;
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   return SERVER_ERROR;
 #else
   LOG_DBG("BookOrbit", "POST body bytes=%u", static_cast<unsigned>(body.length()));
@@ -648,7 +716,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::uploadPageStats(const std::strin
   lastTransportError = httpCode < 0 ? httpCode : 0;
   LOG_DBG("BookOrbit", "Upload stats response: %d", httpCode);
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode >= 200 && httpCode < 300) return OK;
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
@@ -718,7 +786,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::completeSweep(const std::string&
 
   if (httpCode >= 200 && httpCode < 300) return OK;
   if (httpCode == 401) return AUTH_FAILED;
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   return SERVER_ERROR;
 #else
   LOG_DBG("BookOrbit", "POST body bytes=%u", static_cast<unsigned>(body.length()));
@@ -728,7 +796,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::completeSweep(const std::string&
   lastTransportError = httpCode < 0 ? httpCode : 0;
   LOG_DBG("BookOrbit", "Sweep response: %d", httpCode);
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode >= 200 && httpCode < 300) return OK;
   if (httpCode == 401) return AUTH_FAILED;
   return SERVER_ERROR;
@@ -830,7 +898,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::exchangeAnnotations(
   body.release();
   LOG_DBG("BookOrbit", "Annotation exchange response: %d", httpCode);
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode == 401) return AUTH_FAILED;
   if (httpCode < 200 || httpCode >= 300) return SERVER_ERROR;
 
@@ -986,7 +1054,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::ackAnnotations(const std::string
   LOG_INF("BookOrbit", "Annotation ack response: %d (%u applied, %u deleted)", httpCode, (unsigned)applied.size(),
           (unsigned)deleted.size());
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode == 401) return AUTH_FAILED;
   if (httpCode >= 200 && httpCode < 300) return OK;
   return SERVER_ERROR;
@@ -1072,7 +1140,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::exchangeBookmarks(
   body.release();
   LOG_DBG("BookOrbit", "Bookmark exchange response: %d", httpCode);
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode == 401) return AUTH_FAILED;
   if (httpCode < 200 || httpCode >= 300) return SERVER_ERROR;
 
@@ -1213,7 +1281,7 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::ackBookmarks(const std::string& 
   LOG_INF("BookOrbit", "Bookmark ack response: %d (%u applied, %u deleted)", httpCode, (unsigned)applied.size(),
           (unsigned)deletedServerIds.size());
 
-  if (httpCode < 0) return NETWORK_ERROR;
+  if (httpCode < 0) return transportFailure();
   if (httpCode == 401) return AUTH_FAILED;
   if (httpCode >= 200 && httpCode < 300) return OK;
   return SERVER_ERROR;
