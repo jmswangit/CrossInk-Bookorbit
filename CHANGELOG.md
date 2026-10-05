@@ -26,6 +26,7 @@ Based on CrossInk v1.6.1.
 ### Fixed
 
 - Check for Updates no longer crashes and restarts the X4 Pro while it connects to Wi-Fi ([#88](https://github.com/agosez/CrossInk-Bookorbit/issues/88)).
+- Once this version is installed, Check for Updates says the device is up to date instead of offering the version it already runs. Since v1.5.0+bookorbit.1 an up-to-date device was told its own release was a new version, and could install it again.
 - Shortcuts set to BookOrbit Sync keep working after this update. CrossInk v1.6.1 reuses the numbers they were saved under for its Library shortcut, so they would have opened the Library instead; they are carried over the first time the device starts.
 - BookOrbit Sync no longer restarts the device when the server answers with something far larger than expected, such as an error page from a proxy. The sync stops with an error instead.
 - A re-download from the BookOrbit catalog can no longer cost you the book when the very last step fails: the copy you had is put back.

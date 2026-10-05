@@ -42,6 +42,7 @@ constexpr char firmwareAssetName[] = "firmware.bin";
 #endif
 
 constexpr char binSuffix[] = ".bin";
+constexpr char sanitisedForkBuildMarker[] = "-bookorbit.";
 constexpr size_t VERSION_SEGMENT_COUNT = 4;
 constexpr size_t OTA_PROGRESS_UPDATE_BYTES = 64 * 1024;
 constexpr size_t OTA_HASH_CHUNK = 4096;
@@ -72,9 +73,15 @@ bool startsWithNumberAfterOptionalV(const char* version) {
 // The counter inside semver build metadata: the first run of digits after '+'. Returns 0
 // when the version carries no metadata or no digits in it. `1.4.1+bookorbit.2-tiny` yields
 // 2, and the variant suffix the firmware appends to its own version is ignored.
+//
+// A release build names itself with that '+' replaced by '-': scripts/git_branch.py
+// sanitises the version it is handed, so the firmware built for the v1.6.1+bookorbit.1 tag
+// reports 1.6.1-bookorbit.1. That form has to yield the same counter, or an up-to-date
+// device reads its own counter as 0 and is offered the release it already runs.
 int parseForkBuild(const char* version) {
   if (version == nullptr) return 0;
   const char* p = strchr(version, '+');
+  if (p == nullptr) p = strstr(version, sanitisedForkBuildMarker);
   if (p == nullptr) return 0;
   while (*p != '\0' && !isDigit(*p)) ++p;
   int value = 0;
