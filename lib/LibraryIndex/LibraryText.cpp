@@ -3,6 +3,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <cstring>
 
 namespace library {
 
@@ -46,8 +47,8 @@ constexpr CharMap EXPLICIT_MAP[] = {
     {0x00FE, "th"},  // þ
     {0x0131, "i"},   // ı
     {0x0027, "'"},   // ' — kept, not turned into a space, so "O'Brien" stays one word
-    {0x2019, "'"},   // ' — and so the curly form folds to the same thing
-    {0x2018, "'"},   // '
+    {0x2019, "'"},   // ’ — and so the curly form folds to the same thing
+    {0x2018, "'"},   // ‘
 };
 
 const char* explicitMapping(const uint32_t cp) {
@@ -57,11 +58,15 @@ const char* explicitMapping(const uint32_t cp) {
   return nullptr;
 }
 
+// Reverse lookup in the NFC table: given a precomposed codepoint, return the
+// base letter it was composed from, or 0.
+//
+// The table is sorted by (base, mark) so this is a linear scan rather than a
+// binary search. It runs once per non-ASCII character at index-build time and
+// over a short query per keystroke, never over the whole index, so the scan is
+// not on any hot path. Reusing the generated table costs no extra flash — it is
+// already linked for utf8ComposeNfc().
 // Fully decompose: é -> e, and the rare doubly-accented forms (ế -> ê -> e).
-// Reuses Utf8's NFC compose table in reverse rather than adding a second one:
-// that table runs once per non-ASCII character at index-build time and over a
-// short query per keystroke, never over the whole index, so a linear scan
-// against the grain of its (base, mark) sort is not on any hot path.
 uint32_t stripDiacritics(uint32_t cp) {
   for (int guard = 0; guard < 4; guard++) {
     const uint32_t base = utf8DecomposedBase(cp);
@@ -92,8 +97,8 @@ constexpr bool inRanges(const uint32_t cp, const CodepointRange* ranges, const s
 }
 
 // Script coverage follows the SD-font catalog. Keeping the ranges here costs a
-// few hundred flash bytes; linking a general Unicode-category table would cost
-// far more for coverage this firmware doesn't render anyway.
+// few hundred flash bytes; linking libunibreak solely for its general-category
+// table would add roughly 75 KiB of tables plus the classifier code.
 constexpr CodepointRange LETTER_RANGES[] = {
     {0x0041, 0x005A},   {0x0061, 0x007A},   {0x00C0, 0x02AF},  // Latin and IPA
     {0x0370, 0x03FF},   {0x1F00, 0x1FFF},                      // Greek
@@ -138,6 +143,12 @@ bool isUnicodeLetter(const uint32_t cp) {
   return inRanges(cp, LETTER_RANGES, sizeof(LETTER_RANGES) / sizeof(LETTER_RANGES[0]));
 }
 
+// Articles stripped from the head of sort and search keys. Display text never
+// goes through this.
+constexpr const char* ARTICLES[] = {"the ", "a ",   "an ", "le ",  "la ",  "les ", "l'",   "un ",
+                                    "une ", "de ",  "du ", "des ", "der ", "die ", "das ", "el ",
+                                    "los ", "las ", "il ", "lo ",  "gli ", "i ",   "o ",   "os "};
+
 // Views into `folded`, not copies: the caller keeps that string alive for as
 // long as the tokens, and a std::string per token costs an allocation each plus
 // 24 bytes of stack apiece -- 288 B for the twelve, over the 256 B this repo
@@ -162,14 +173,8 @@ bool isSingleCodepoint(const std::string_view text) {
 
 }  // namespace
 
-std::string fold(const std::string_view text) {
+std::string fold(const std::string_view text, const bool stripArticle) {
   std::string out;
-  foldInto(text, out);
-  return out;
-}
-
-void foldInto(const std::string_view text, std::string& out) {
-  out.clear();
   out.reserve(text.size());
 
   const auto* cursor = reinterpret_cast<const unsigned char*>(text.data());
@@ -220,6 +225,17 @@ void foldInto(const std::string_view text, std::string& out) {
     // words. Deferring the space keeps runs collapsed and drops trailing ones.
     if (!out.empty()) pendingSpace = true;
   }
+
+  if (stripArticle) {
+    for (const char* article : ARTICLES) {
+      const size_t len = strlen(article);
+      if (out.size() > len && out.compare(0, len, article) == 0) {
+        out.erase(0, len);
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 uint32_t foldedGroupInitial(const std::string_view folded) {

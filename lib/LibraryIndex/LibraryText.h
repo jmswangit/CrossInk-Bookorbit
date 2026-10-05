@@ -10,7 +10,8 @@
 // Pure functions over UTF-8, no hardware and no allocation beyond the returned
 // strings, so the whole unit is host-testable (test/library_text).
 //
-// Design notes that are easy to get wrong:
+// Design notes that are easy to get wrong and were measured on a real card
+// (docs/superpowers/specs/2026-08-05-addendum-a-findability.md, A2.1-A2.8):
 //
 //   * The fold DECOMPOSES. `utf8ComposeNfc()` goes the other way, so a fold
 //     built on it passes on a card holding only decomposed text and then mangles
@@ -48,9 +49,9 @@ std::string joinLibraryPath(std::string_view folder, std::string_view name);
 // dropped. Apostrophes survive as ASCII '\'' so names and elisions keep their
 // shape.
 //
-std::string fold(std::string_view text);
-// Reuse caller-owned storage for scans. `text` must not alias `out`.
-void foldInto(std::string_view text, std::string& out);
+// `stripArticle` additionally removes one leading article ("the ", "le ", "la ",
+// ...) — correct for sort keys and search text, wrong for anything displayed.
+std::string fold(std::string_view text, bool stripArticle = false);
 
 // First letter of an already-folded sort key, or 0 when the key starts with a
 // number/non-letter. The Library renders 0 as its shared '#' group.
@@ -91,7 +92,7 @@ std::string authorKey(std::string_view author);
 // through the same fold.
 //
 // Every query word must PREFIX some word of the book. That is the rule that fits
-// the hardware: with no partial refresh, each keypress costs a full panel
+// the hardware: with no partial refresh, each keypress costs a full ~185 ms panel
 // repaint, so the reader wants to stop typing as early as possible. "dar mat"
 // — six keys — finds "Wuthering Heights", where a plain substring test would demand the
 // whole of one word and give nothing for the effort of a second.
@@ -101,7 +102,7 @@ std::string authorKey(std::string_view author);
 bool matchesQuery(std::string_view haystack, std::string_view needle);
 
 // Ordering key for a shelf sorted by author: surname first, then the rest.
-// "Herman Melville" becomes "melville herman", so the shelf reads M where a library
+// "Herman Melville" becomes "melville herman", so the shelf reads C where a library
 // would put it.
 //
 // Deliberately NOT the same key as authorKey(). That one sorts a name's words so

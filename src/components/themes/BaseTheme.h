@@ -167,6 +167,7 @@ enum UIIcon {
   Settings,
   Transfer,
   Library,
+  BookOpenText,
   Opds,
   Wifi,
   Hotspot,

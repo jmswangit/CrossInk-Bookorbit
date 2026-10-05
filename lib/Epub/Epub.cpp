@@ -233,6 +233,25 @@ void normalizeThumbDimensions(int& width, int& height) {
   }
 }
 
+enum class CoverImageKind { Jpeg, Png, Unknown };
+
+// Cover items are frequently mislabeled: EPUBs declare image/jpeg and name the
+// file .jpg even when the bytes are PNG. Route by the real magic bytes so the
+// wrong decoder never rejects the file.
+CoverImageKind sniffCoverImageKind(FsFile& file) {
+  uint8_t magic[4] = {};
+  file.seek(0);
+  const int bytesRead = file.read(magic, sizeof(magic));
+  file.seek(0);
+  if (bytesRead >= 2 && magic[0] == 0xFF && magic[1] == 0xD8) {
+    return CoverImageKind::Jpeg;
+  }
+  if (bytesRead >= 4 && magic[0] == 0x89 && magic[1] == 0x50 && magic[2] == 0x4E && magic[3] == 0x47) {
+    return CoverImageKind::Png;
+  }
+  return CoverImageKind::Unknown;
+}
+
 std::unique_ptr<BookMetadataCache> makeBookMetadataCacheNoThrow(const std::string& cachePath,
                                                                 const bool cacheCumulativeSpineSizes) {
   auto cache = makeUniqueNoThrow<BookMetadataCache>(cachePath, cacheCumulativeSpineSizes);
@@ -1228,59 +1247,40 @@ bool Epub::generateCoverBmp(bool cropped, const GfxRenderer* renderer, const int
     return false;
   }
 
-  if (FsHelpers::hasJpgExtension(coverImageHref)) {
-    std::string coverJpgPath;
-    if (!ensureCachedCoverImage(coverImageHref, coverJpgPath)) {
+  if (FsHelpers::hasJpgExtension(coverImageHref) || FsHelpers::hasPngExtension(coverImageHref)) {
+    const bool jpgHref = FsHelpers::hasJpgExtension(coverImageHref);
+    std::string coverSrcPath;
+    if (!ensureCachedCoverImage(coverImageHref, coverSrcPath)) {
       return false;
     }
 
-    FsFile coverJpg;
-    if (!Storage.openFileForRead("EBP", coverJpgPath, coverJpg)) {
+    FsFile coverSrc;
+    if (!Storage.openFileForRead("EBP", coverSrcPath, coverSrc)) {
       return false;
     }
 
     FsFile coverBmp;
     if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped, imageLevels), coverBmp)) {
-      coverJpg.close();
+      coverSrc.close();
       return false;
     }
-    releaseReaderSdFontCachesBeforeCoverDecode(renderer, readerFontId, "cover JPG decode");
-    const bool success = JpegToBmpConverter::jpegFileToBmpStream(coverJpg, coverBmp, cropped, imageLevels);
+
+    CoverImageKind kind = sniffCoverImageKind(coverSrc);
+    if (kind == CoverImageKind::Unknown) {
+      kind = jpgHref ? CoverImageKind::Jpeg : CoverImageKind::Png;
+    }
+
+    releaseReaderSdFontCachesBeforeCoverDecode(renderer, readerFontId,
+                                               kind == CoverImageKind::Png ? "cover PNG decode" : "cover JPG decode");
+    const bool success = kind == CoverImageKind::Png
+                             ? PngToBmpConverter::pngFileToBmpStream(coverSrc, coverBmp, cropped, imageLevels)
+                             : JpegToBmpConverter::jpegFileToBmpStream(coverSrc, coverBmp, cropped, imageLevels);
     // Explicitly close() files before leaving the converter path.
-    coverJpg.close();
+    coverSrc.close();
     coverBmp.close();
 
     if (!success) {
       LOG_ERR("EBP", "Failed to generate BMP from cover image");
-      Storage.remove(getCoverBmpPath(cropped, imageLevels).c_str());
-    }
-    return success;
-  }
-
-  if (FsHelpers::hasPngExtension(coverImageHref)) {
-    std::string coverPngPath;
-    if (!ensureCachedCoverImage(coverImageHref, coverPngPath)) {
-      return false;
-    }
-
-    FsFile coverPng;
-    if (!Storage.openFileForRead("EBP", coverPngPath, coverPng)) {
-      return false;
-    }
-
-    FsFile coverBmp;
-    if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped, imageLevels), coverBmp)) {
-      coverPng.close();
-      return false;
-    }
-    releaseReaderSdFontCachesBeforeCoverDecode(renderer, readerFontId, "cover PNG decode");
-    const bool success = PngToBmpConverter::pngFileToBmpStream(coverPng, coverBmp, cropped, imageLevels);
-    // Explicitly close() files before leaving the converter path.
-    coverPng.close();
-    coverBmp.close();
-
-    if (!success) {
-      LOG_ERR("EBP", "Failed to generate BMP from PNG cover image");
       Storage.remove(getCoverBmpPath(cropped, imageLevels).c_str());
     }
     return success;
@@ -1414,63 +1414,43 @@ bool Epub::generateThumbBmpInternal(int width, int height, const bool adaptiveCo
   const auto& coverImageHref = coverHrefOverride ? *coverHrefOverride : bookMetadataCache->coreMetadata.coverItemHref;
   if (coverImageHref.empty()) {
     LOG_DBG("EBP", "No known cover image for thumbnail");
-  } else if (FsHelpers::hasJpgExtension(coverImageHref)) {
-    std::string coverJpgPath;
-    if (!ensureCachedCoverImage(coverImageHref, coverJpgPath)) {
+  } else if (FsHelpers::hasJpgExtension(coverImageHref) || FsHelpers::hasPngExtension(coverImageHref)) {
+    const bool jpgHref = FsHelpers::hasJpgExtension(coverImageHref);
+    std::string coverSrcPath;
+    if (!ensureCachedCoverImage(coverImageHref, coverSrcPath)) {
       return false;
     }
 
-    FsFile coverJpg;
-    if (!Storage.openFileForRead("EBP", coverJpgPath, coverJpg)) {
-      return false;
-    }
-
-    FsFile thumbBmp;
-    if (!Storage.openFileForWrite("EBP", thumbPath, thumbBmp)) {
-      coverJpg.close();
-      return false;
-    }
-    int THUMB_TARGET_WIDTH = width;
-    int THUMB_TARGET_HEIGHT = height;
-    releaseReaderSdFontCachesBeforeCoverDecode(renderer, readerFontId, "thumbnail JPG decode");
-    const bool success = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverJpg, thumbBmp, THUMB_TARGET_WIDTH,
-                                                                             THUMB_TARGET_HEIGHT, adaptiveContain);
-    // Explicitly close() files before leaving the converter path.
-    coverJpg.close();
-    thumbBmp.close();
-
-    if (!success) {
-      LOG_ERR("EBP", "Failed to generate thumb BMP from JPG cover image");
-      Storage.remove(thumbPath.c_str());
-    }
-    return success;
-  } else if (FsHelpers::hasPngExtension(coverImageHref)) {
-    std::string coverPngPath;
-    if (!ensureCachedCoverImage(coverImageHref, coverPngPath)) {
-      return false;
-    }
-
-    FsFile coverPng;
-    if (!Storage.openFileForRead("EBP", coverPngPath, coverPng)) {
+    FsFile coverSrc;
+    if (!Storage.openFileForRead("EBP", coverSrcPath, coverSrc)) {
       return false;
     }
 
     FsFile thumbBmp;
     if (!Storage.openFileForWrite("EBP", thumbPath, thumbBmp)) {
-      coverPng.close();
+      coverSrc.close();
       return false;
+    }
+    CoverImageKind kind = sniffCoverImageKind(coverSrc);
+    if (kind == CoverImageKind::Unknown) {
+      kind = jpgHref ? CoverImageKind::Jpeg : CoverImageKind::Png;
     }
     int THUMB_TARGET_WIDTH = width;
     int THUMB_TARGET_HEIGHT = height;
-    releaseReaderSdFontCachesBeforeCoverDecode(renderer, readerFontId, "thumbnail PNG decode");
-    const bool success = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverPng, thumbBmp, THUMB_TARGET_WIDTH,
-                                                                           THUMB_TARGET_HEIGHT, adaptiveContain);
+    releaseReaderSdFontCachesBeforeCoverDecode(
+        renderer, readerFontId, kind == CoverImageKind::Png ? "thumbnail PNG decode" : "thumbnail JPG decode");
+    const bool success =
+        kind == CoverImageKind::Png
+            ? PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverSrc, thumbBmp, THUMB_TARGET_WIDTH,
+                                                               THUMB_TARGET_HEIGHT, adaptiveContain)
+            : JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverSrc, thumbBmp, THUMB_TARGET_WIDTH,
+                                                                  THUMB_TARGET_HEIGHT, adaptiveContain);
     // Explicitly close() files before leaving the converter path.
-    coverPng.close();
+    coverSrc.close();
     thumbBmp.close();
 
     if (!success) {
-      LOG_ERR("EBP", "Failed to generate thumb BMP from PNG cover image");
+      LOG_ERR("EBP", "Failed to generate thumb BMP from cover image");
       Storage.remove(thumbPath.c_str());
     }
     return success;

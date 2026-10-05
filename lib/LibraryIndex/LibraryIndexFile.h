@@ -17,20 +17,16 @@
 namespace library {
 
 enum class SortOrder : uint8_t {
-  // "Recent" orders by file creation time, oldest first in Asc; firstSeen
-  // breaks ties and orders files without creation timestamps.
+  // "Recent" orders by file modification time (arrival on the card), oldest
+  // first in Asc; firstSeen breaks ties for filesystems without timestamps.
   RecentAsc,
   RecentDesc,
   TitleAsc,
   TitleDesc,
   AuthorAsc,
   AuthorDesc,
-  AuthorFirstAsc,
-  AuthorFirstDesc,
   SeriesAsc,
   SeriesDesc,
-  GenreAsc,
-  GenreDesc,
 };
 
 // One book to locate in the index: the complete-path hash (clixPathHash) is
@@ -79,9 +75,6 @@ class LibraryIndexFile {
   bool recentRowsFor(const BookIdentity* books, size_t count, uint16_t* outRows);
 
   bool readRecord(uint16_t ordinal, ClixRecord& out);
-  // V5 creation timestamp in the title-ordered side array. Zero means the
-  // filesystem provided no creation time. Older versions have no such array.
-  bool readCreationTime(uint16_t ordinal, uint32_t& out);
   // Persisted complete-path fingerprint used by rebuild reconciliation.
   bool readPathHash(const ClixRecord& record, uint64_t& out);
 
@@ -94,23 +87,16 @@ class LibraryIndexFile {
   // longer carries "Title - Author".
   bool readAuthor(const ClixRecord& record, std::string& out);
   bool readTitle(const ClixRecord& record, std::string& out);
-  // Checked display text for browsing/search. Empty metadata is valid: use
-  // the filename stem for a missing title and leave a missing author blank.
-  bool readDisplayText(const ClixRecord& record, std::string& title, std::string& author);
   // Cleaned author spelling before the library-wide spelling vote. Empty is a
   // valid value, so success is independent of `out.empty()`.
   bool readSourceAuthor(const ClixRecord& record, std::string& out);
+  // Series name the book declares, or false when it has none.
   bool readSeries(const ClixRecord& record, std::string& out);
-  bool readGenre(const ClixRecord& record, std::string& out);
-  // V6 sortable signed float bits; UINT32_MAX means no usable order.
-  bool readSeriesPosition(const ClixRecord& record, uint32_t& out);
+  // True when the book was marked finished in the reader.
+  static bool isCompleted(const ClixRecord& record) { return (record.flags & CLIX_BOOK_FLAG_COMPLETED) != 0; }
 
   // Absolute path of the book, rebuilt from its folder record.
   bool readPath(const ClixRecord& record, std::string& out);
-  // A small, caller-owned offset table bounds folder walks during full-library scans.
-  static constexpr uint16_t FOLDER_CHECKPOINT_COUNT = 128;
-  bool buildFolderCheckpoints(uint32_t* offsets, uint16_t& stride);
-  bool readPath(const ClixRecord& record, std::string& out, const uint32_t* offsets, uint16_t stride);
 
  private:
   bool openImpl(const char* path, bool acceptStaleFold);

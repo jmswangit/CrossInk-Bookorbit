@@ -1,160 +1,132 @@
 #pragma once
-
 #include <FreeInkApp.h>
 #include <FreeInkUIGfxRenderer.h>
-#include <LibraryBuilder.h>
+#include <I18n.h>
+
+#include <atomic>
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include <LibraryIndexFile.h>
 
-#include <memory>
-#include <string>
-
-#include "LibraryInputBuffer.h"
-#include "RecentBooksStore.h"
 #include "activities/Activity.h"
-#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
+struct Rect;
+
+// Card-wide shelf backed by the CLX1 library index.
+//
+// Tabs (CrossPoint's layout, plus a Series tab):
+//   Recent - a list of books, most recently added first.
+//   Title  - a cover grid of every book.
+//   Author - one entry per author; selecting opens that author's books.
+//   Series - one entry per series; selecting opens that series' books, in
+//            series order.
+//
+// A non-empty search collapses every tab to one flat list of matching books.
 class LibraryActivity final : public Activity {
+ private:
+  using UiApp = freeink::ui::FreeInkApp<24, 8>;
+
+  enum class Tab : uint8_t { Recent, Title, Author, Series };
+  enum class Mode : uint8_t { List, Grid, Groups };
+  // Combined status + format filter presets. Persisted across sessions.
+  enum class Filter : uint8_t { All, Unread, Finished, EpubAll, EpubUnread, EpubFinished };
+
+  // One aggregated author / series, as a run of the active sort permutation.
+  struct Group {
+    std::string name;
+    uint16_t firstRow = 0;
+    uint16_t count = 0;
+  };
+
+  static constexpr int kTabCount = 4;
+  static constexpr int kNoPageLoaded = -1;
+
+  // Grid geometry is derived per view: 3x3 for the Title tab, 2x2 (larger
+  // covers) when drilled into a series.
+  int gridCols = 3;
+  int gridRows = 3;
+  int coverWidth = 123;
+  int coverHeight = 180;
+
+  ButtonNavigator buttonNavigator;
+
+  library::LibraryIndexFile index;
+  bool indexReady = false;
+  bool buildFailed = false;
+
+  Tab tab = Tab::Recent;
+  Mode mode = Mode::List;
+  Filter filter = Filter::All;
+  bool reversed = false;
+  bool drilled = false;
+
+  std::string query;      // non-empty while searching
+  std::string groupName;  // author/series being shown in a drilled list
+
+  std::vector<uint16_t> items;  // ordinals for List / Grid modes
+  std::vector<Group> groups;    // Groups mode
+
+  size_t selectorIndex = 0;
+  int topIndex = 0;
+  int visibleRows = 1;
+  int listTop = 0;
+  int loadedPageStart = kNoPageLoaded;
+  bool backLongPressFired = false;
+  bool confirmLongPressFired = false;
+
+  freeink::ui::ListNav listNav;
+
+  freeink::ui::GfxRendererTarget uiTarget;  // must precede `app`
+  UiApp app;
+  std::atomic<bool> uiReady{false};
+
+  static void listScreen(UiApp::ScreenType& screen, void* user);
+  static void onRowEvent(const freeink::ui::ActionEvent& event, void* user);
+  void buildListScreen(UiApp::ScreenType& screen);
+
+  void ensureIndex();
+  void rebuildContent();
+  void buildSearch();              // global book search (title/author/series)
+  void buildGroups(bool byAuthor);
+  void openGroup(size_t groupIndex);
+
+  size_t rowCount() const;
+  bool rowOrdinal(size_t row, uint16_t& ordinal);
+
+  void switchTab(int tabIndex);
+  void toggleReverse();
+  void openSearch();
+  void openFilterMenu();
+  bool passesFilter(const library::ClixRecord& record) const;
+  void loadFilter();
+  void saveFilter() const;
+  // Generates cover thumbnails (both grid sizes) for the books the last build
+  // reported as new/changed, behind a progress popup.
+  void prefetchListedCovers();
+  void moveSelection(int index);
+  void activateSelected();
+  void goUp();
+
+  Rect tabBandRect() const;
+  Rect contentRect() const;
+  Rect searchIconRect() const;
+  Rect filterIconRect() const;
+  int tabIndexFromPoint(int x, int y) const;
+  int gridIndexFromPoint(int x, int y);
+  void updateGridGeometry();
+  void coverSizeFor(int cols, int rows, int& outW, int& outH) const;
+  int booksPerPage() const { return gridCols * gridRows; }
+  void drawTabs() const;
+  void drawGrid();
+  void ensurePageCovers();
+
  public:
-  LibraryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  explicit LibraryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool blocksGlobalInput() const override { return actionPopup.isActive(); }
-
-#ifdef SIMULATOR
-  size_t simulatorPendingInputs() const { return pendingInput.size(); }
-  int simulatorSelection() const { return selection; }
-  int simulatorRowCount() const { return rowCount(); }
-  bool simulatorReadBook(int row, RecentBook& book) { return readBook(row, book); }
-  void simulatorSetView(uint8_t method, bool reverse, const std::string& search = "") {
-    sort = static_cast<Sort>(method);
-    descending = reverse;
-    query = search;
-    refreshIndexIfNeeded();
-    resetViewport();
-  }
-  void simulatorRefresh() { refreshLibrary(); }
-#endif
-
- private:
-  enum class Sort : uint8_t { DateAdded, Title, AuthorLast, AuthorFirst, RecentlyRead, Series, Genre };
-  // Touch header controls precede the book rows; button-only navigation visits books directly.
-  static constexpr int CONTROL_COUNT = 5;
-  using UiApp = freeink::ui::FreeInkApp<32, 4>;
-  freeink::ui::GfxRendererTarget uiTarget;
-  UiApp app;
-  ButtonNavigator buttonNavigator;
-  freeink::ui::ListNav listNav;
-  OptionPopup actionPopup;
-  library::LibraryIndexFile index;
-  Sort sort = Sort::RecentlyRead;
-  bool descending = true;
-  int selection = CONTROL_COUNT;
-  bool showSelection = true;
-  int topIndex = 0;
-  int gridPageStart = 0;
-  int loadedGridPageStart = -1;
-  int nextGridCoverRow = -1;
-  int16_t gridCoverWidth = 0;
-  int16_t gridCoverHeight = 0;
-  int gridProgressRow = -1;
-  float gridProgress = -1.0f;
-  bool uiReady = false;
-  bool initialScanPending = false;
-  bool confirmLongPressCaptured = false;
-  bool ignoreConfirmRelease = false;
-  // Set when the Back press that cancelled a scan is still held.
-  bool ignoreBackRelease = false;
-  // Back held when a scan starts belongs to whatever opened Library (a reader
-  // long-press shortcut, say); only a fresh press after its release cancels.
-  bool scanBackHeldAtStart = false;
-  // A cancelled scan stays cancelled for this visit: sort changes and book
-  // actions show the previous index instead of starting the scan again.
-  bool scanCancelledThisVisit = false;
-  // These fields belong only to the input task, including during rendering.
-  LibraryInputBuffer pendingInput;
-  bool inputOverflow = false;
-  bool touchTracking = false;
-  int touchStartX = 0;
-  int touchStartY = 0;
-  int touchLastX = 0;
-  int touchLastY = 0;
-  bool scanFailed = false;
-  StrId scanFailureText = StrId::STR_LIBRARY_SCAN_FAILED;
-  bool filterFailed = false;
-  bool pendingCacheDeletedFeedback = false;
-  unsigned long cacheDeletedFeedbackShowTime = 0;
-  std::string query;
-  // Searches and filters keep one bit per indexed book plus a running count per
-  // 256-book block: about 4 KiB at the format ceiling, where a u16 per match
-  // would need 64 KiB of contiguous C3 heap. Bits are positions in filterOrder.
-  static constexpr uint16_t FILTER_BLOCK_ROWS = 256;
-  std::unique_ptr<uint8_t[]> filterBits;
-  std::unique_ptr<uint16_t[]> filterRanks;
-  library::SortOrder filterOrder = library::SortOrder::TitleAsc;
-  uint16_t filterSourceCount = 0;
-  uint16_t filteredCount = 0;
-  // Indices into the bounded recent-books history, independent of the Library index.
-  uint16_t recentRows[RecentBooksStore::MAX_RECENT_BOOKS]{};
-  size_t recentCount = 0;
-  // SDK rowProvider consumes the strings before asking for the next row.
-  // Reuse one row instead of retaining every title/author in the library.
-  RecentBook rowScratch;
-  std::string groupHeading;
-  std::string previousGroupScratch;
-  std::string groupKeyScratch;
-  std::string previousGroupKeyScratch;
-  std::string seriesScratch;
-  std::string genreScratch;
-  std::string subtitleScratch;
-
-  static void listScreen(UiApp::ScreenType& screen, void* user);
-  static void onRowEvent(const freeink::ui::ActionEvent& event, void* user);
-  static void onControlEvent(const freeink::ui::ActionEvent& event, void* user);
-  static void provideRow(void* user, uint16_t row, freeink::ui::ListItem& item);
-  void buildListScreen(UiApp::ScreenType& screen);
-  void buildGrid(UiApp::ScreenType& screen);
-  void loadGridPageCovers();
-  bool loadGridCover(int row);
-  void loadGridProgress();
-  bool gridEnabled() const;
-  void buildSortHeader(UiApp::ScreenType& screen);
-  const char* sortLabel() const;
-  library::SortOrder indexOrder() const;
-  int rowCount() const;
-  uint16_t ordinalForRow(int row);
-  uint16_t filteredSourceRow(uint16_t row) const;
-  bool readBook(int row, RecentBook& book, bool fullPath = true);
-  uint32_t groupForRow(int row);
-  uint16_t dateGroupForRow(int row);
-  bool metadataGroupForRow(int row, std::string& out);
-  bool hasActiveFilter() const;
-  void latchInput();
-  void queueInput(LibraryInputBuffer::Type type, int x = -1, int y = -1);
-  void handleInput(const LibraryInputBuffer::Event& input);
-  void refreshIndexIfNeeded(bool showScanning = false);
-  bool rebuildIndex(bool showScanning);
-  void drawScanScreen(const char* message) const;
-  bool scanTouchEnabled() const;
-  static bool scanCancelRequested(void* context);
-  static void onScanProgress(void* context, const library::BuildProgress& progress);
-  void readRecentBook(size_t historyRow, RecentBook& book) const;
-  void resolveRecents();
-  void applyFilter();
-  void resetViewport();
-  void reloadAfterBookAction();
-  void openBook(int row);
-  void openSortPicker(int selectedIndex = -1);
-  void openMenu();
-  void refreshLibrary();
-  void openSearch();
-  void openSettings();
-  void activateControl(int control);
-  // Owns the allocation-failure check and render lock for every child result.
-  void openDialog(std::unique_ptr<Activity>&& activity, ActivityResultHandler handler);
-  void promptDeleteBook(const RecentBook& book);
-  void promptRemoveBook(const std::string& path, const std::string& title);
-  void showBookActionMenu(size_t bookIndex, bool ignoreInitialConfirmRelease = false);
 };

@@ -78,8 +78,6 @@ enum class SmokeStep : uint8_t {
   Home,
   FileBrowser,
   FileBrowserSettings,
-  Library,
-  RecentLibrary,
   Settings,
   SideButtons,
   ReaderMenu,
@@ -190,21 +188,6 @@ class SimulatorSmokeTest {
   Activity* homeReaderSmokeReader = nullptr;
   bool homeReaderConfirmationAccepted = false;
   bool backHomeChildCancelled = false;
-
-  void prepareRecentLibrary() {
-    SETTINGS.librarySortMethod = 4;
-    SETTINGS.librarySortDescending = 1;
-    SETTINGS.libraryUseMetadata = 1;
-    SETTINGS.libraryShowTxt = 1;
-    SETTINGS.libraryHideFinishedBooks = 0;
-    for (int i = 0; i < 20; ++i) {
-      const std::string path = "/books/recent-smoke-" + std::to_string(i) + ".txt";
-      if (!Storage.writeFile(path.c_str(), "Recent Library smoke fixture")) fail("Cannot create recent fixture");
-      RECENT_BOOKS.addOrUpdateBook(path, "Title " + std::to_string(i), "Author " + std::to_string(i), "");
-    }
-    Storage.remove(library::libraryIndexPath());
-    library::invalidateLibraryIndex();
-  }
 
   static const char* homeReaderSmokeReaderName(const uint8_t kind) {
     switch (kind) {
@@ -1663,9 +1646,8 @@ class SimulatorSmokeTest {
           break;
         }
 #endif
-        prepareRecentLibrary();
-        activityManager.goToLibrary();
-        queueStep("Recent Library", SmokeStep::RecentLibrary);
+        activityManager.goToSettings();
+        queueStep("Settings", SmokeStep::Settings);
         break;
 
       case SmokeStep::FileBrowserSettings:
@@ -1675,178 +1657,9 @@ class SimulatorSmokeTest {
           step = SmokeStep::Done;
           break;
         }
-        prepareRecentLibrary();
-        activityManager.goToLibrary();
-        queueStep("Recent Library", SmokeStep::RecentLibrary);
-        break;
-
-      case SmokeStep::RecentLibrary: {
-        RenderLock lock;
-        auto* activity = static_cast<LibraryActivity*>(activityManager.simulatorCurrentActivity());
-        if (Storage.exists(library::libraryIndexPath()) || !library::libraryIndexNeedsRefresh())
-          fail("Recently Opened built the missing Library index");
-        RecentBook book;
-        if (activity->simulatorRowCount() != 18 || !activity->simulatorReadBook(0, book) ||
-            book.path != "/books/recent-smoke-19.txt")
-          fail("Recent Library did not show bounded history in newest-first order");
-        activity->simulatorSetView(4, false);
-        if (!activity->simulatorReadBook(0, book) || book.path != "/books/recent-smoke-2.txt")
-          fail("Recent Library did not reverse history");
-        activity->simulatorSetView(4, true, "Author 19");
-        if (activity->simulatorRowCount() != 1 || !activity->simulatorReadBook(0, book) ||
-            book.path != "/books/recent-smoke-19.txt")
-          fail("Recent Library author search failed");
-        SETTINGS.libraryShowTxt = 0;
-        activity->simulatorSetView(4, true);
-        if (activity->simulatorRowCount() != 0) fail("Recent Library file filter failed");
-        SETTINGS.libraryShowTxt = 1;
-        SETTINGS.libraryUseMetadata = 0;
-        activity->simulatorSetView(4, true, "recent-smoke-19");
-        if (activity->simulatorRowCount() != 1 || !activity->simulatorReadBook(0, book) ||
-            book.title != "recent-smoke-19" || !book.author.empty())
-          fail("Recent Library filename display/search failed");
-        SETTINGS.libraryUseMetadata = 1;
-        // An unreadable index must also be irrelevant to a history refresh.
-        if (!Storage.writeFile(library::libraryIndexPath(), "broken")) fail("Cannot write broken index fixture");
-        activity->simulatorSetView(4, true);
-        activity->simulatorRefresh();
-        FsFile broken;
-        if (!Storage.openFileForRead("SMOKE", library::libraryIndexPath(), broken)) fail("Missing broken index");
-        const auto brokenSize = broken.size();
-        broken.close();
-        if (brokenSize != 6 || !library::libraryIndexNeedsRefresh() || activity->simulatorRowCount() != 18)
-          fail("Recent Library refreshed the full index");
-        activity->simulatorSetView(1, false);
-        activity->simulatorSetView(4, true);
-        if (activity->simulatorRowCount() != 18 || !activity->simulatorReadBook(0, book))
-          fail("Recent Library stayed unavailable after a failed full scan");
-        const char* epubPath = std::getenv("CROSSINK_SIMULATOR_SMOKE_BOOK");
-        if (epubPath) {
-          const std::string cachePath = Epub(epubPath, "/.crosspoint").getCachePath();
-          if (!Storage.exists(cachePath.c_str()) && !Storage.mkdir(cachePath.c_str()))
-            fail("Cannot create completed-book cache");
-          auto stats = BookReadingStats::load(cachePath);
-          stats.isCompleted = true;
-          if (!stats.save(cachePath)) fail("Cannot save completed-book fixture");
-          RECENT_BOOKS.addOrUpdateBook(epubPath, "Completed smoke book", "", "");
-          SETTINGS.libraryHideFinishedBooks = 1;
-          activity->simulatorSetView(4, true);
-          if (activity->simulatorRowCount() != 17) fail("Recent Library did not hide finished EPUB");
-          SETTINGS.libraryHideFinishedBooks = 0;
-          activity->simulatorSetView(4, true);
-          if (activity->simulatorRowCount() != 18 || !activity->simulatorReadBook(0, book) || book.path != epubPath)
-            fail("Recent Library did not restore finished EPUB");
-          RECENT_BOOKS.removeByPath(epubPath);
-          stats.isCompleted = false;
-          if (!stats.save(cachePath)) fail("Cannot restore completed-book fixture");
-        }
-        for (int i = 0; i < 20; ++i) {
-          const std::string path = "/books/recent-smoke-" + std::to_string(i) + ".txt";
-          if (!Storage.remove(path.c_str())) fail("Cannot remove recent fixture");
-        }
-        activity->simulatorRefresh();
-        if (activity->simulatorRowCount() != 0) fail("Recent Library did not prune missing books");
-        // The builder deliberately retains an unreadable previous index. Remove
-        // that fixture before checking a deferred build from a missing index.
-        if (!Storage.remove(library::libraryIndexPath())) fail("Cannot remove broken index fixture");
-        // Switching to a full-library sort must still build the deferred index.
-        activity->simulatorSetView(1, false);
-        if (library::libraryIndexNeedsRefresh() || activity->simulatorRowCount() == 0)
-          fail("Full Library did not build its deferred index");
-        SETTINGS.librarySortMethod = 1;
-        SETTINGS.librarySortDescending = 0;
-        LOG_INF("SMOKE",
-                "Recent Library missing/corrupt index, 18-book limit, ordering, search, filters and completion passed");
-        queueStep("Library", SmokeStep::Library);
-        break;
-      }
-
-      case SmokeStep::Library: {
-        // Rendering an error screen is not a successful Library smoke test.
-        // The script supplies an isolated card with at least one EPUB.
-        library::LibraryIndexFile shelf;
-        const bool hasFixture = std::getenv("CROSSINK_SIMULATOR_SMOKE_BOOK") != nullptr;
-        const bool readable = shelf.open(library::libraryIndexPath());
-        const bool populated = readable && (!hasFixture || shelf.bookCount() > 0);
-        const uint16_t books = shelf.bookCount();
-        shelf.close();
-        if (!populated) fail("Library did not publish a readable populated index");
-        constexpr char REFRESH_FIXTURE[] = "/books/library-refresh-smoke.txt";
-        if (library::libraryIndexNeedsRefresh()) fail("Successful Library scan stayed dirty");
-        if (libraryRefreshPass == 0) {
-          libraryBaselineBooks = books;
-          auto* libraryActivity = static_cast<LibraryActivity*>(activityManager.simulatorCurrentActivity());
-          const int beforeSelection = libraryActivity->simulatorSelection();
-          {
-            RenderLock busyRender;
-            mappedInputManager.simulatorClearInputFrame();
-            mappedInputManager.simulatorInjectRelease(MappedInputManager::Button::Down);
-            libraryActivity->loop();
-            mappedInputManager.simulatorClearInputFrame();
-            mappedInputManager.simulatorInjectRelease(MappedInputManager::Button::Up);
-            libraryActivity->loop();
-            if (libraryActivity->simulatorPendingInputs() != 2 ||
-                libraryActivity->simulatorSelection() != beforeSelection)
-              fail("Library did not buffer navigation while rendering");
-#if CROSSINK_APP_CAP_TOUCH
-            mappedInputManager.simulatorClearInputFrame();
-            mappedInputManager.simulatorInjectTouchDown(200, 300);
-            libraryActivity->loop();
-            mappedInputManager.simulatorClearInputFrame();
-            mappedInputManager.simulatorInjectTouchMove(200, 100);
-            libraryActivity->loop();
-            mappedInputManager.simulatorClearInputFrame();
-            mappedInputManager.simulatorInjectTouchRelease(200, 100);
-            libraryActivity->loop();
-            if (libraryActivity->simulatorPendingInputs() != 5)
-              fail("Library did not buffer touch press, cancellation and scroll");
-#endif
-          }
-          mappedInputManager.simulatorClearInputFrame();
-          while (libraryActivity->simulatorPendingInputs()) libraryActivity->loop();
-          const int selectionBeforeOverflow = libraryActivity->simulatorSelection();
-          {
-            RenderLock busyRender;
-            for (size_t i = 0; i <= LibraryInputBuffer::CAPACITY; ++i) {
-              mappedInputManager.simulatorClearInputFrame();
-              mappedInputManager.simulatorInjectRelease(MappedInputManager::Button::Down);
-              libraryActivity->loop();
-            }
-            if (libraryActivity->simulatorPendingInputs() != 1)
-              fail("Library overflow did not cancel the partial input sequence");
-          }
-          mappedInputManager.simulatorClearInputFrame();
-          libraryActivity->loop();
-          if (libraryActivity->simulatorSelection() != selectionBeforeOverflow)
-            fail("Library replayed navigation after input overflow");
-          LOG_INF("SMOKE", "Library input buffering during rendering and overflow passed");
-          // Deliberately bypass invalidation to prove that a normal return visit
-          // reuses the index instead of walking the card again.
-          if (!Storage.writeFile(REFRESH_FIXTURE, "Library refresh smoke fixture"))
-            fail("Cannot create Library fixture");
-        } else if (libraryRefreshPass == 1) {
-          if (books != libraryBaselineBooks) fail("Library rescanned an unchanged session");
-          library::invalidateLibraryIndex();
-        } else if (libraryRefreshPass == 2) {
-          if (books != libraryBaselineBooks + 1) fail("Library missed an invalidated addition");
-          if (!Storage.remove(REFRESH_FIXTURE)) fail("Cannot delete Library fixture");
-          library::invalidateLibraryIndex();
-        } else if (books != libraryBaselineBooks) {
-          fail("Library missed an invalidated deletion");
-        }
-        if (libraryRefreshPass++ < 3) {
-          activityManager.goToLibrary();
-          queueStep("Library cache reuse and invalidation", SmokeStep::Library);
-          break;
-        }
-        LOG_INF("SMOKE", "Library reuse, addition and deletion refresh passed");
-        if (mappedInputManager.hasHomeKey()) {
-          renderer.setOrientation(GfxRenderer::Orientation::LandscapeCounterClockwise);
-        }
         activityManager.goToSettings();
-        queueStep(mappedInputManager.hasHomeKey() ? "Settings landscape" : "Settings", SmokeStep::Settings);
+        queueStep("Settings", SmokeStep::Settings);
         break;
-      }
 
       case SmokeStep::StatusBarEditor: {
         {

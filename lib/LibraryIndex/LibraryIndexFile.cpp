@@ -32,10 +32,8 @@ bool LibraryIndexFile::openImpl(const char* path, const bool acceptStaleFold) {
     return false;
   }
 
-  // Older layouts share the header and records. Reconciliation can recover
-  // their path hashes and arrival history before writing the current layout.
-  lastValidity = acceptStaleFold ? validateHeaderStructure(head, file.fileSize64(), true)
-                                 : validateHeader(head, file.fileSize64());
+  lastValidity =
+      acceptStaleFold ? validateHeaderStructure(head, file.fileSize64()) : validateHeader(head, file.fileSize64());
   if (lastValidity != ClixValidity::Ok) {
     LOG_INF("LIBIDX", "index rejected: %s", clixValidityName(lastValidity));
     file.close();
@@ -79,13 +77,6 @@ uint16_t LibraryIndexFile::ordinalForRow(const SortOrder order, const uint16_t r
       uint16_t ordinal = NONE;
       return readAt(authorOrderOffset(head, k), &ordinal, sizeof(ordinal)) && ordinal < head.bookCount ? ordinal : NONE;
     }
-    case SortOrder::AuthorFirstAsc:
-    case SortOrder::AuthorFirstDesc: {
-      const uint16_t k = order == SortOrder::AuthorFirstAsc ? row : static_cast<uint16_t>(head.bookCount - 1 - row);
-      uint16_t ordinal = NONE;
-      return readAt(firstNameOrderOffset(head, k), &ordinal, sizeof(ordinal)) && ordinal < head.bookCount ? ordinal
-                                                                                                          : NONE;
-    }
     case SortOrder::RecentAsc:
     case SortOrder::RecentDesc: {
       // arrivalOrder runs oldest first, so both directions share one on-disk
@@ -93,19 +84,13 @@ uint16_t LibraryIndexFile::ordinalForRow(const SortOrder order, const uint16_t r
       const uint16_t k = order == SortOrder::RecentAsc ? row : static_cast<uint16_t>(head.bookCount - 1 - row);
       uint16_t ordinal = NONE;
       return readAt(arrivalOrderOffset(head, k), &ordinal, sizeof(ordinal)) && ordinal < head.bookCount ? ordinal
-                                                                                                        : NONE;
+                                                                                                         : NONE;
     }
     case SortOrder::SeriesAsc:
-    case SortOrder::SeriesDesc:
-    case SortOrder::GenreAsc:
-    case SortOrder::GenreDesc: {
-      if (head.formatVersion < 4) return NONE;
-      const bool series = order == SortOrder::SeriesAsc || order == SortOrder::SeriesDesc;
-      const bool ascending = order == SortOrder::SeriesAsc || order == SortOrder::GenreAsc;
-      const uint16_t k = ascending ? row : static_cast<uint16_t>(head.bookCount - 1 - row);
+    case SortOrder::SeriesDesc: {
+      const uint16_t k = order == SortOrder::SeriesAsc ? row : static_cast<uint16_t>(head.bookCount - 1 - row);
       uint16_t ordinal = NONE;
-      const uint32_t offset = series ? seriesOrderOffset(head, k) : genreOrderOffset(head, k);
-      return readAt(offset, &ordinal, sizeof(ordinal)) && ordinal < head.bookCount ? ordinal : NONE;
+      return readAt(seriesOrderOffset(head, k), &ordinal, sizeof(ordinal)) && ordinal < head.bookCount ? ordinal : NONE;
     }
   }
   return NONE;
@@ -195,12 +180,6 @@ bool LibraryIndexFile::readRecord(const uint16_t ordinal, ClixRecord& out) {
   return true;
 }
 
-bool LibraryIndexFile::readCreationTime(const uint16_t ordinal, uint32_t& out) {
-  out = 0;
-  if (!opened || head.formatVersion < 5 || ordinal >= head.bookCount) return false;
-  return readAt(creationTimeOffset(head, ordinal), &out, sizeof(out));
-}
-
 bool LibraryIndexFile::readName(const ClixRecord& record, std::string& out) {
   out.clear();
   if (!opened || record.nameLen == 0) return false;
@@ -254,76 +233,24 @@ bool LibraryIndexFile::readTitle(const ClixRecord& record, std::string& out) {
   return readBlobField(record, 1, out) && !out.empty();
 }
 
-bool LibraryIndexFile::readDisplayText(const ClixRecord& record, std::string& title, std::string& author) {
-  if (!readBlobField(record, 1, title) || !readBlobField(record, 0, author)) return false;
-  if (title.empty()) {
-    if (!readName(record, title)) return false;
-    const size_t dot = title.find_last_of('.');
-    if (dot != std::string::npos && dot != 0) title.resize(dot);
-  }
-  return true;
-}
-
 bool LibraryIndexFile::readSourceAuthor(const ClixRecord& record, std::string& out) {
   return readBlobField(record, 2, out);
 }
 
 bool LibraryIndexFile::readSeries(const ClixRecord& record, std::string& out) {
-  return head.formatVersion >= 3 && readBlobField(record, 3, out);
-}
-
-bool LibraryIndexFile::readGenre(const ClixRecord& record, std::string& out) {
-  return head.formatVersion >= 3 && readBlobField(record, 4, out);
-}
-
-bool LibraryIndexFile::readSeriesPosition(const ClixRecord& record, uint32_t& out) {
-  out = CLIX_UNKNOWN_SERIES_POSITION;
-  if (!opened || head.formatVersion < 6 || record.nameOff > head.nameLen ||
-      sizeof(uint64_t) + record.nameLen > head.nameLen - record.nameOff)
-    return false;
-  uint32_t at = record.nameOff + sizeof(uint64_t) + record.nameLen;
-  for (uint8_t field = 0; field < 5; field++) {
-    if (at >= head.nameLen) return false;
-    uint8_t length = 0;
-    if (!readAt(head.nameStart + at, &length, sizeof(length))) return false;
-    ++at;
-    if (length > head.nameLen - at) return false;
-    at += length;
-  }
-  return at <= head.nameLen && sizeof(out) <= head.nameLen - at && readAt(head.nameStart + at, &out, sizeof(out));
+  return readBlobField(record, 3, out) && !out.empty();
 }
 
 bool LibraryIndexFile::readPath(const ClixRecord& record, std::string& out) {
-  return readPath(record, out, nullptr, 0);
-}
-
-bool LibraryIndexFile::buildFolderCheckpoints(uint32_t* offsets, uint16_t& stride) {
-  stride = 0;
-  if (!opened || !offsets || head.folderCount == 0) return false;
-  stride = (head.folderCount + FOLDER_CHECKPOINT_COUNT - 1) / FOLDER_CHECKPOINT_COUNT;
-  uint32_t offset = head.folderStart;
-  const uint32_t folderEnd = head.folderStart + head.folderLen;
-  for (uint32_t i = 0; i < head.folderCount; ++i) {
-    if (offset >= folderEnd) return false;
-    if (i % stride == 0) offsets[i / stride] = offset;
-    uint8_t pathLen = 0;
-    if (!readAt(offset, &pathLen, sizeof(pathLen)) || pathLen == 0 || pathLen > folderEnd - offset - 1u) return false;
-    offset += 1u + pathLen;
-  }
-  return true;
-}
-
-bool LibraryIndexFile::readPath(const ClixRecord& record, std::string& out, const uint32_t* offsets,
-                                const uint16_t stride) {
   out.clear();
   if (!opened || record.folderId >= head.folderCount) return false;
 
-  // Folder records are variable length. A scan can supply sparse offsets to
-  // bound each walk; ordinary single-book reads still start at folder zero.
-  const uint16_t firstFolder = offsets && stride ? (record.folderId / stride) * stride : 0;
-  uint32_t offset = offsets && stride ? offsets[record.folderId / stride] : head.folderStart;
+  // Folder records are variable length, so reaching folder n means walking the
+  // n preceding length bytes. At one seek per folder this is only done when a
+  // book is opened or its details are shown, never while paging.
+  uint32_t offset = head.folderStart;
   const uint32_t folderEnd = head.folderStart + head.folderLen;
-  for (uint32_t i = firstFolder; i <= record.folderId; i++) {
+  for (uint16_t i = 0; i <= record.folderId; i++) {
     if (offset >= folderEnd) return false;
     uint8_t pathLen = 0;
     if (!readAt(offset, &pathLen, sizeof(pathLen)) || pathLen == 0) return false;

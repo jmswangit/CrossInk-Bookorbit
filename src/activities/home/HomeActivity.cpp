@@ -247,7 +247,7 @@ const char* savedItemsLabel(bool hasBookmarks, bool hasClippings) {
 void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks,
                          bool hasClippings) {
   items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
-  items.push({tr(STR_LIBRARY), Library, HomeMenuAction::Library});
+  items.push({tr(STR_LIBRARY), BookOpenText, HomeMenuAction::Library});
 
   if (hasOpdsServers) {
     items.push({tr(STR_OPDS_BROWSER), Opds, HomeMenuAction::OpdsBrowser});
@@ -277,7 +277,7 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
   if (SETTINGS.isLibraryFileBrowserSwapped()) {
     items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
   } else {
-    items.push({tr(STR_LIBRARY), Library, HomeMenuAction::Library});
+    items.push({tr(STR_LIBRARY), BookOpenText, HomeMenuAction::Library});
   }
 
   if (hasOpdsServers) {
