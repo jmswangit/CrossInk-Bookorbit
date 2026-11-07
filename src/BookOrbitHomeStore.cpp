@@ -24,7 +24,7 @@ constexpr char PATH[] = "/.crosspoint/bookorbit_home.bin";
 constexpr char TMP_PATH[] = "/.crosspoint/bookorbit_home.tmp";
 constexpr char COVER_DIR[] = "/.crosspoint/bookorbit_home";
 constexpr uint32_t MAGIC = 0x484F4242;  // "BBOH"
-constexpr uint16_t VERSION = 1;
+constexpr uint16_t VERSION = 2;
 constexpr size_t HEADER_SIZE = 8;  // magic, version, sizeof(BookOrbitHomeSnapshot)
 // One boot's worth of covers: the rest comes with the next sync.
 constexpr int MAX_COVER_FETCHES = 8;

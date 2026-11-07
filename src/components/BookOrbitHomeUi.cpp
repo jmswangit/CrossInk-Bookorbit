@@ -942,7 +942,7 @@ void BookOrbitHomeUi::drawStreak(const Rect& tile) const {
 }
 
 void BookOrbitHomeUi::drawLibraryStats(const Rect& tile) const {
-  drawTileFrame(tile);
+  drawTileHeader(tile, tr(STR_LIBRARY), &icon_home_books_24);
   char books[12] = "-";
   char authors[12] = "-";
   char series[12] = "-";
@@ -950,13 +950,14 @@ void BookOrbitHomeUi::drawLibraryStats(const Rect& tile) const {
   if (libraryAuthorCount >= 0) snprintf(authors, sizeof(authors), "%ld", static_cast<long>(libraryAuthorCount));
   if (librarySeriesCount >= 0) snprintf(series, sizeof(series), "%ld", static_cast<long>(librarySeriesCount));
   char lines[3][40];
-  snprintf(lines[0], sizeof(lines[0]), "%s: %s", tr(STR_HOME_BOOKS), books);
+  snprintf(lines[0], sizeof(lines[0]), "%s: %s", tr(STR_HOME_BOOKS_LABEL), books);
   snprintf(lines[1], sizeof(lines[1]), "%s: %s", tr(STR_HOME_AUTHORS), authors);
   snprintf(lines[2], sizeof(lines[2]), "%s: %s", tr(STR_HOME_SERIES), series);
-  // The tile is one grid row (about 50 px), so the three counts take a line each in
-  // the smallest font, vertically centred; no header, which would push the last out.
+  // One line per count in the smallest font, below the header. The X4 Pro's portrait
+  // grid gives this tile about 100 px, so the header, three lines and spacing fit.
   const int lineHeight = renderer.getLineHeight(SMALL_FONT_ID);
-  const int top = tile.y + std::max(2, (tile.height - 3 * lineHeight) / 2);
+  const int headerBottom = tile.y + 32;
+  const int top = headerBottom + std::max(0, (tile.height - 32 - 3 * lineHeight) / 2);
   for (int i = 0; i < 3; i++) {
     drawFitted(SMALL_FONT_ID, tile.x + kPad, top + i * lineHeight, lines[i], tile.width - 2 * kPad);
   }
@@ -1311,11 +1312,11 @@ void BookOrbitHomeUi::drawHighlight(const Rect& tile) const {
                     EpdFontFamily::BOLD);
   const bool hasBook = snapshot->highlightBook[0] != '\0';
   const int textWidth = tile.width - 2 * kPad;
-  const int lines = (tile.height - 33 - (hasBook ? 26 : 6)) / renderer.getLineHeight(UI_10_FONT_ID);
+  const int lines = (tile.height - 33 - (hasBook ? 26 : 6)) / renderer.getLineHeight(SMALL_FONT_ID);
   int y = tile.y + 33;
-  for (const auto& line : renderer.wrappedText(UI_10_FONT_ID, snapshot->highlightText, textWidth, lines)) {
-    renderer.drawText(UI_10_FONT_ID, tile.x + kPad, y, line.c_str());
-    y += renderer.getLineHeight(UI_10_FONT_ID);
+  for (const auto& line : renderer.wrappedText(SMALL_FONT_ID, snapshot->highlightText, textWidth, lines)) {
+    renderer.drawText(SMALL_FONT_ID, tile.x + kPad, y, line.c_str());
+    y += renderer.getLineHeight(SMALL_FONT_ID);
   }
   if (hasBook) {
     drawTileFooter(tile, snapshot->highlightBook);

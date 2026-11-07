@@ -48,7 +48,7 @@ struct BookOrbitHomeSnapshot {
   uint8_t recentCount = 0;
   char displayName[24] = {};
   char badgeName[32] = {};
-  char highlightText[180] = {};
+  char highlightText[512] = {};
   char highlightBook[46] = {};
   BookOrbitHomeBook continueReading[CONTINUE_COUNT];
   BookOrbitHomeBook discover[SHELF_COUNT];
