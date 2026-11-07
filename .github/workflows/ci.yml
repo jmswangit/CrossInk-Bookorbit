@@ -174,10 +174,10 @@ jobs:
       - name: Install PlatformIO Core
         run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
 
-      - name: Install SDL2
+      - name: Install SDL2 and OpenSSL
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl2-dev
+          sudo apt-get install -y libsdl2-dev libssl-dev
 
       - name: Apply the simulator cold-build overrides
         # The fetched simulator package needs an include-path fix (see the
@@ -188,10 +188,25 @@ jobs:
           python3 test/integration/ci/patch_simulator_package.py
 
       - name: Build the simulator
+        # Two things platformio.ini leaves to macOS. On Linux the simulator
+        # package computes MD5 with OpenSSL (CommonCrypto on macOS), which has to
+        # be linked. And GNU ld pulls in the package's firmware_link_stubs.o,
+        # whose MySerialImpl and uzlib checksum definitions repeat the ones
+        # lib/Logging and lib/uzlib already carry; the macOS linker never loads
+        # that object. The bodies are the same, so either copy will do.
+        # PlatformIO appends this variable to the environment's build_flags.
+        env:
+          PLATFORMIO_BUILD_FLAGS: -lcrypto -Wl,--allow-multiple-definition
         run: pio run -e simulator
 
       - name: Start the BookOrbit server
-        run: docker compose -f test/integration/docker-compose.yml up -d --wait
+        # The book dock is a bind mount: the seeder fills it from the host and
+        # the server, running as its own user, empties it. Left to Docker, the
+        # folder would be created owned by root and closed to both.
+        run: |
+          mkdir -p test/integration/library-dock
+          chmod a+rwx test/integration/library-dock
+          docker compose -f test/integration/docker-compose.yml up -d --wait
 
       - name: Seed the server
         run: |

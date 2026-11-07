@@ -10,6 +10,7 @@ Everything else — fonts, themes, reader features, reading stats, controls, the
 
 - **BookOrbit progress sync** — sync your reading position with a self-hosted BookOrbit server.
 - **BookOrbit highlight and bookmark sync** — two-way: what you highlight or bookmark on the device appears in the web reader at its exact place in the text, what you add on the web lands in the book, and deletions propagate both ways.
+- **A BookOrbit Home theme** — Home as pages of tiles modeled on BookOrbit's dashboard: the current book, streak, week and yearly goal, the catalog's shelves with their covers, and a year of reading. Opening it never waits on the network: a sync keeps it up to date, and without an account it runs on your own numbers.
 - **BookOrbit catalog browser** — browse your server's library on the device and download EPUBs over WiFi, including by author, series or collection.
 - **Offline shortcuts to your own books** — "On device" and "In progress" categories that open a book directly, without touching the network.
 - **Reading statistics pushed to BookOrbit** — your reading time, streaks and pace on the server's dashboard, fed by the pages you turn on the device.
@@ -17,6 +18,22 @@ Everything else — fonts, themes, reader features, reading stats, controls, the
 - **KOReader Sync is removed** — its screens, settings and shortcut are gone. The X3/X4 firmware gets a 6.5 MB partition, and this fork's BookOrbit layer plus CrossInk's own growth stopped fitting in it; dropping the second sync provider is what buys the room. Credentials already saved on the SD card are left alone, simply unread.
 
 BookOrbit exposes a KOReader-compatible sync API, so this fork talks to it the same way the official BookOrbit KOReader plugin does. Your BookOrbit server must be recent enough to serve the KOReader plugin endpoints under `{server}/api/v1/koreader` — including `plugin/catalog/*` for the catalog browser and `plugin/annotations/*` / `plugin/bookmarks/*` for highlight and bookmark sync (servers without those are detected, and the missing steps are simply skipped).
+
+---
+
+## The BookOrbit Home theme
+
+![The BookOrbit Home theme's three pages on an Xteink X4: Home with the current book, streak, week, yearly goal and other books being read; Library with the catalog's Discover and Recently Added shelves and what is on the card; Statistics with a year of reading, a finish date, reading moments, totals and a highlight of the day](docs/images/bookorbit-home/overview.png)
+
+Choose **BookOrbit** in **Settings → Display → UI Theme**, and Home becomes three pages of tiles modeled on BookOrbit's own dashboard:
+
+- **Home** — the current book with its chapter, progress and time left (Confirm resumes it), your streak, this week's reading, your yearly goal, the BookOrbit tile that refreshes everything, and the other books you are reading, on this device or another one.
+- **Library** — the catalog's Discover and Recently Added shelves, links to the catalog, its authors and its series, and what is on the card: how many books, how many came from BookOrbit, and how full the card is. A book that is not on the card yet downloads from its cover, and Home comes back once it is done.
+- **Statistics** — a year of reading, one square a day, when you will finish the current book, the times and days you read, your all-time totals, the next badge and a highlight of the day.
+
+Left and Right turn pages, Up and Down move between tiles; on touch devices, swipe between pages and tap a tile. Opening Home never waits on the network: Sync on Sleep or the BookOrbit tile bring the server's numbers, reading done on the device counts straight away, and without an account the theme runs on your own numbers. The [reader features guide](docs/reader-features.md#bookorbit-home) has the details.
+
+_Screenshots taken in the simulator, with public-domain books from [Standard Ebooks](https://standardebooks.org)._
 
 ---
 
@@ -38,6 +55,18 @@ That URL is what the device asks for below. The preconfigured plugin offered on 
 
 Credentials live on the SD card in `/.crosspoint/bookorbit.json`, obfuscated with the device's hardware MAC — the same scheme CrossInk uses for KOReader credentials.
 
+### Behind Cloudflare Access
+
+If your server is published through a Cloudflare tunnel with an Access policy in front of it, Cloudflare stops the device's requests before they reach BookOrbit. Give the device a [service token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/) to let it through:
+
+1. In Cloudflare Zero Trust, create a service token and allow it on your BookOrbit application with a policy whose action is **Service Auth**.
+2. On the device, start **File Transfer** and open `http://<device-ip>/settings` in a browser.
+3. Under **BookOrbit Sync**, fill in **Cloudflare Access Client ID** and **Cloudflare Access Client Secret**, then save. The secret is never shown back; emptying the Client ID removes the token from the device.
+
+The device then presents the token with every BookOrbit request, as the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers. It does so only when the server URL is `https://`.
+
+> Give the reader a service token of its own, allowed on BookOrbit only. Its secret is kept on the SD card the way your password is — obfuscated, not encrypted — and the device does not verify the server's certificate. A token that opens nothing else can be revoked without touching the rest of your setup.
+
 ## Syncing reading progress
 
 Open a book, then **Menu → Bookmarks tab → BookOrbit Sync**. The device compares the position stored on the server with your local one — chapter, page, percentage and the device name that last uploaded — and offers two choices:
@@ -51,11 +80,15 @@ The option matching the furthest-read position is preselected. If the server has
 
 **Settings → System → BookOrbit Sync → Sync Behavior** chooses what a sync does with that screen. **Ask every time**, the default, always shows it. **Smart sync** resolves the clear cases on its own and only asks when asking is genuinely useful:
 
-- If the server is further ahead _and_ has been updated since this device last synced the book, the server position is applied and you are back in the book.
+- If the server is further ahead _and_ has moved since this device last synced the book, the server position is applied and you are back in the book.
 - If your local position is further ahead _and_ the server has not moved since this device last synced, your position is uploaded — the screen flashes "Upload successful" and returns on its own.
 - Equal positions just say "Already synced" and return.
 
-Anything else still shows the choice screen: the first sync of a book on a device, a server that reports no dates, and above all a genuine conflict — both sides having moved since your last sync, which is exactly the case a human should arbitrate. Each device remembers its last sync of each book in a small file next to the book's cache, and every sync updates it whichever mode is active, so the history smart sync relies on is already in place when you enable it.
+Anything else still shows the choice screen: the first sync of a book on a device, a server that reports no dates, and above all a genuine conflict — both sides having moved since your last sync, which is exactly the case a human should arbitrate.
+
+A newer date on the server is not enough to say it has moved, because BookOrbit's web reader saves the position a book opens at: opening the book there and closing it gives the server's position a new date without anyone having read a page. What the web reader saves is the start of its own page, so a server position found in the chapter your device last synced in, at or before the page it synced, counts as not having moved, and your further position is still uploaded. A server position further on means someone read elsewhere. One in an earlier chapter means someone went back on purpose, which is also how BookOrbit hands out a progress reset, and it is never overwritten without asking.
+
+Each device remembers its last sync of each book (the server's date and the position both sides were left at) in a small file next to the book's cache, and every sync updates it whichever mode is active, so the history smart sync relies on is already in place when you enable it. A book last synced with v1.6.1+bookorbit.1 or earlier has the date only, and goes by it until its next sync settles the progress.
 
 BookOrbit identifies books by the binary partial-MD5 hash of the EPUB file (the same "Binary" matching KOReader offers), so the **same EPUB file** has to be present on both readers for positions to pair up. A book downloaded from your BookOrbit catalog is the exact file your server knows about, so it matches automatically.
 
@@ -100,6 +133,13 @@ Details worth knowing:
   progressively as you read, one chapter per visit, and start syncing from there.
 - A highlight's stored text is capped at 4 KB; an extremely long web highlight is drawn
   up to where that cap cuts its text.
+- The device draws every highlight the same way. Notes, colors and styles added on the
+  web stay on the server, and a highlight that came from the server is never sent back.
+- BookOrbit 3.5.0 tracks highlights per book file rather than per device, so after the
+  server is upgraded, the first syncs of each book receive back every highlight it
+  already had, 8 per sync. They are recognized and nothing is duplicated.
+- With BookOrbit 3.5.0 or later, a book that lost all its highlights or bookmarks on the
+  device (a wiped card, say) gets them back from the server at its next sync.
 
 ## Reading statistics
 
@@ -167,6 +207,7 @@ The root list contains:
 | Recently added / Continue reading / All books | Your server's own sections                                                                                                                          |
 | **Authors** / **Series**                      | Paged lists with a book count per entry; pick one to see its books (series are listed in series order)                                              |
 | **Collections**                               | Your server's collections, with a book count per entry; pick one to see its books                                                                   |
+| **Want to Read**                              | The books you most recently marked as want to read, when your server offers that shelf                                                             |
 | **Search**                                    | Free-text search of your library                                                                                                                    |
 | **On device**                                 | Everything downloaded from the catalog, wherever it was filed, plus every EPUB in the download folder, the SD card root and `/Read` — works offline |
 | **In progress**                               | Recent books you haven't finished yet — works offline                                                                                               |
@@ -175,7 +216,20 @@ In a server book list, **Confirm** downloads the book into the download folder c
 
 The file is named by **your server's KOReader file naming template** — BookOrbit's _Settings → Koreader → File Naming_, the same template its own KOReader plugin follows — so a book can land inside a series folder, for instance. BookOrbit resolves the template and tells the device where the file belongs; a per-device override set on the server is honoured too, and any folder it asks for is created under your download folder. If your account has no template, BookOrbit's default applies, which files books under `Series/` and `Standalone/`. Books downloaded before this behaviur existed are left where they are.
 
+A server book list (a root section, the books of an author, series, collection, library or SmartScope, or search results) can be sorted and filtered, as the Library is sorted:
+
+- **Sort** — date added, title, author (by last name), recently read or series. The first row of the picker flips the direction (A-Z or Z-A); a newly picked order starts in its natural direction, newest first for dates.
+- **Filter** — all books, or only those that are unread, being read or finished on your BookOrbit account. The header then names the filter, and its count is the number of matching books.
+
+On the X3 and X4, **Left** opens Sort and **Right** opens Filter while **Up** and **Down** move through the list, as in the Library. On touch devices, the two buttons at the right of the header open them. Your server does the sorting and filtering, so a long list keeps paging exactly. The choice applies to the list you are in; opening a section again shows it in its own order.
+
+When the Library's **List View** is **Expanded**, a book list is split into sections the way the Library splits its own: by first letter when sorted by title or author (where your server ranks it, by the author's last name), by day when sorted by date added, and by series when sorted by series. The second row of the Sort picker switches the List View between Expanded and Compact without leaving the catalog; it is the Library's setting, so the Library follows.
+
+**Want to Read** lists the books you most recently marked as want to read in BookOrbit: the shelf BookOrbit's own KOReader plugin shows, a dozen books at most, in the order you marked them. It appears after the server's sections when your server offers that shelf. BookOrbit's catalog cannot filter a whole list by that status, so it is a shelf rather than a filter choice.
+
 In **On device** and **In progress**, Confirm opens the book in the reader instead of downloading it.
+
+On the X3 and X4, the reader restarts briefly before it opens the catalog and before each download, so the secure connection gets the memory it needs; leaving the catalog restarts it once more. A long listing keeps only the pages around the one on screen in memory and reloads the others from the SD card as you scroll back.
 
 > If the catalog reports _"BookOrbit sent an unexpected reply"_, the server answered but not with the catalog API — usually a BookOrbit version without the KOReader catalog endpoints, a wrong server URL, or a reverse proxy/SSO layer intercepting `/api/v1/koreader/plugin/*`.
 

@@ -7,6 +7,13 @@
 #include "BookOrbitStatsQueue.h"
 #include "KOReaderSyncClient.h"
 
+/** One document hash the server recognised as a catalog book. */
+struct BookOrbitHashMatch {
+  std::string hash;  // the KOReader partial-MD5 sent in the request
+  int64_t bookId = 0;
+  int64_t bookFileId = 0;
+};
+
 /**
  * HTTP client for BookOrbit's KOReader-compatible sync API.
  *
@@ -141,6 +148,37 @@ class BookOrbitSyncClient {
                              uint32_t annotationsUpserted);
 
   /**
+   * Ask the server which catalog books some local files are (POST /plugin/match-check),
+   * the same call BookOrbit's own KOReader plugin makes while sweeping a library.
+   *
+   * The server resolves each hash against the catalog's stored file hashes and its
+   * history, so this recognises books however they arrived on the card, including
+   * copies made by another BookOrbit client and files renamed or moved by hand.
+   * Hashes are KOReader partial-MD5 hex strings (see KOReaderDocumentId::calculate);
+   * the server accepts up to 500 per request, and the caller should keep batches much
+   * smaller so the request fits beside the TLS session on this hardware.
+   *
+   * @param hashes The document hashes to resolve (1..500)
+   * @param deviceModel Human-readable device name reported alongside the check
+   * @param outMatches Receives one entry per recognised hash; unrecognised hashes are
+   *                   simply absent
+   * @return OK on success, error code on failure
+   */
+  static Error matchCheck(const std::vector<std::string>& hashes, const std::string& deviceModel,
+                          std::vector<BookOrbitHashMatch>& outMatches);
+
+  /**
+   * Whether the server takes `sidecarState` on the highlight and bookmark exchanges: the
+   * "sidecarState" capability of GET /plugin/version, BookOrbit 3.5.0 and later.
+   *
+   * Asked once per boot, and only a definite answer is kept: the capability list, or a 404 from
+   * a server with no such route. A transport failure or a server error answers false for this
+   * sync and asks again on the next one. Leaving the field out is always safe; sending it to a
+   * server that does not know it fails the whole exchange with HTTP 400.
+   */
+  static bool acceptsSidecarState();
+
+  /**
    * Send one batch of local highlight changes to BookOrbit's annotation exchange
    * (POST /plugin/annotations/exchange).
    *
@@ -153,9 +191,14 @@ class BookOrbitSyncClient {
    * Keep batches at BOOKORBIT_ANNOTATION_BATCH; the payload has to fit beside an open TLS
    * session.
    *
+   * Since BookOrbit 3.5.0 the server keeps this state per device and book file, not per device:
+   * the first exchange after a server upgrade offers back every highlight of the book, this
+   * device's own included, as if it were a new device.
+   *
    * @param documentHash The binary partial-MD5 document hash
    * @param deviceModel Human-readable device name reported alongside the annotations
-   * @param keys The device's full key set, or count=0/complete=false to suppress deletions
+   * @param keys The device's full key set, or count=0/complete=false to suppress deletions; its
+   *             sidecar state goes out only when stated (see acceptsSidecarState)
    * @param changes Annotations to send (may be empty when only `keys` needs to go out)
    * @param changeCount Number of annotations
    * @param outUnmatched Set when the server does not recognise this document at all

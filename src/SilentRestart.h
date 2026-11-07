@@ -18,6 +18,16 @@ enum class NetworkBootTarget : uint32_t {
   // The BookOrbit sync that runs behind the sleep screen before deep sleep (see
   // enterDeepSleep()). Its payload holds the BOOKORBIT_SLEEP_SYNC_PAYLOAD_* bits.
   BOOKORBIT_SLEEP_SYNC = 9,
+  // A BookOrbit catalog download, restarted into so its TLS session gets a heap that
+  // browsing has not fragmented. What to fetch, and the listing to return to, wait
+  // on the SD card (BookOrbitCatalogListCache::saveDownloadResume()).
+  BOOKORBIT_DOWNLOAD = 10,
+  // The BookOrbit catalog itself on the X3 and X4, as OPDS has its own boot: every
+  // listing it loads is a TLS session that needs a 16 KB record buffer in one block,
+  // which the rest of the app's heap no longer has after a few pages (issue #96).
+  BOOKORBIT_CATALOG = 11,
+  // The BookOrbit Home's own sync: replaces its snapshot, then restarts to Home.
+  BOOKORBIT_HOME_REFRESH = 12,
 };
 
 // BOOKORBIT_SYNC payload: bit 16 set means bits 0-15 carry the paragraph index of the
@@ -53,6 +63,9 @@ constexpr bool isNetworkBootTargetValue(const uint32_t value) {
     case NetworkBootTarget::MANAGE_FONTS:
     case NetworkBootTarget::BOOKORBIT_SYNC:
     case NetworkBootTarget::BOOKORBIT_SLEEP_SYNC:
+    case NetworkBootTarget::BOOKORBIT_DOWNLOAD:
+    case NetworkBootTarget::BOOKORBIT_CATALOG:
+    case NetworkBootTarget::BOOKORBIT_HOME_REFRESH:
       return true;
   }
   return false;
@@ -65,7 +78,10 @@ static_assert(isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::
                   isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::FILE_TRANSFER)) &&
                   isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::MANAGE_FONTS)) &&
                   isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::BOOKORBIT_SYNC)) &&
-                  isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::BOOKORBIT_SLEEP_SYNC)),
+                  isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::BOOKORBIT_SLEEP_SYNC)) &&
+                  isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::BOOKORBIT_DOWNLOAD)) &&
+                  isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::BOOKORBIT_CATALOG)) &&
+                  isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::BOOKORBIT_HOME_REFRESH)),
               "Every network boot target must pass RTC target validation");
 
 void silentRestart();                                            // home screen

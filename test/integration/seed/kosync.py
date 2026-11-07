@@ -196,6 +196,15 @@ class AdminClient:
         request_json("PATCH", self.api("/koreader/credentials"), self._headers(),
                      {"username": username, "password": password}, ok=(200,))
 
+    def show_audio_only_books(self) -> None:
+        """Let the plugin catalog list audiobook-only books. BookOrbit 3.5.0 hides them by
+        default, which would leave the firmware's own EPUB filter untested. Older servers
+        list them anyway and reject the unknown field with HTTP 400."""
+        status, body = _request("PATCH", self.api("/koreader/credentials"), self._headers(),
+                                {"hideAudioOnlyBooks": False})
+        if status not in (200, 400):
+            raise HttpError("PATCH", self.api("/koreader/credentials"), status, body)
+
     def ensure_library(self, name: str, folder_path: str) -> tuple[int, int]:
         """Returns (libraryId, folderId), creating the library when none exists."""
         libraries = request_json("GET", self.api("/libraries"), self._headers(), ok=(200,))
@@ -282,6 +291,25 @@ class AdminClient:
         (409) is fine."""
         upload_file(self.api(f"/books/{book_id}/files"), self._headers(), path)
 
+    def epub_file_id(self, book_id: int) -> int:
+        """The id of a book's EPUB file, which the web reader's own endpoints are keyed on."""
+        detail = request_json("GET", self.api(f"/books/{book_id}"), self._headers(), ok=(200,))
+        return next(int(f["id"]) for f in detail["files"] if f["format"].lower() == "epub")
+
+    def save_web_progress(self, file_id: int, xpointer: str, percentage: float) -> None:
+        """What BookOrbit's web reader posts two seconds after it lands on a position,
+        the one it opens a book at included: the position as a KOReader xpointer and a
+        0-100 percentage. The server dates the save with its own clock, and serves it
+        to devices as ``bookorbit-web`` for as long as it is the newest thing it holds."""
+        request_json("POST", self.api(f"/books/files/{file_id}/progress"), self._headers(),
+                     {"cfi": None, "percentage": percentage, "koreaderProgress": xpointer})
+
+    def reset_progress(self, file_id: int) -> None:
+        """Clear the file's reading progress, as BookOrbit's own interface does. Until a
+        device has pushed the start position, the server serves devices the start of the
+        book dated now, as ``bookorbit-web``, and holds back any other position they push."""
+        request_json("DELETE", self.api(f"/books/files/{file_id}/progress"), self._headers(), ok=(200, 204))
+
     def ensure_smart_scope(self, name: str, icon: str, rules: list[dict]) -> int:
         """Create a SmartScope matching ``rules``, or return the existing one by name.
 
@@ -365,23 +393,27 @@ class KosyncDevice:
         return request_json("PUT", self.api("/syncs/progress"), self._headers(), payload)
 
     def exchange_annotations(self, document_hash: str, keys: list[dict], keys_complete: bool,
-                             changes: list[dict]) -> dict:
+                             changes: list[dict], sidecar_state: str | None = None) -> dict:
         """Mirror of BookOrbitSyncClient::exchangeAnnotations. ``keys`` entries are
         {"k": md5, "dt": datetime}; ``changes`` entries carry datetime/pos0/pos1/text
-        (drawer and posFormat are filled in here)."""
+        (drawer and posFormat are filled in here). ``sidecar_state`` is "known" or "new"
+        (BookOrbit 3.5.0 and later), left out when None."""
         for change in changes:
             change.setdefault("drawer", "lighten")
             change.setdefault("posFormat", "xpointer")
+        book: dict[str, Any] = {
+            "hash": document_hash,
+            "keysComplete": keys_complete,
+            "keys": keys,
+            "changes": changes,
+        }
+        if sidecar_state is not None:
+            book["sidecarState"] = sidecar_state
         payload = {
             "deviceId": self.device_id,
             "deviceModel": self.device_model,
             "pluginVersion": self.plugin_version,
-            "books": [{
-                "hash": document_hash,
-                "keysComplete": keys_complete,
-                "keys": keys,
-                "changes": changes,
-            }],
+            "books": [book],
         }
         return request_json("POST", self.api("/plugin/annotations/exchange"),
                             self._headers(), payload)

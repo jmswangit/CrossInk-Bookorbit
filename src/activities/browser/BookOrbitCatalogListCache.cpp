@@ -8,11 +8,15 @@
 #include <cstring>
 #include <functional>
 
+#include "BookOrbitCatalogLink.h"
+
 namespace {
 constexpr char BOOKORBIT_LIST_CACHE_DIR[] = "/.crosspoint/bookorbit_lists";
 constexpr char BOOKORBIT_LIST_CACHE_PREFIX[] = "bookorbit_list_";
 constexpr char BOOKORBIT_LIST_CACHE_SUFFIX[] = ".json";
 constexpr size_t BOOKORBIT_CACHE_PATH_CAP = 180;
+constexpr char BOOKORBIT_DOWNLOAD_RESUME_PATH[] = "/.crosspoint/bookorbit_download.json";
+constexpr char BOOKORBIT_ENTRY_LINK_PATH[] = "/.crosspoint/bookorbit_catalog_link.json";
 
 bool writeJsonStringFile(const std::string& path, const std::string& text) {
   FsFile file;
@@ -78,9 +82,9 @@ void appendJsonEscaped(std::string& out, const std::string& value) {
 }
 
 std::string booksCacheKey(const BookOrbitBookQuery& query, const int page) {
-  return std::string("books|") + std::to_string(page) + "|" + query.sort + "|" + query.readStatus + "|" + query.query +
-         "|" + query.author + "|" + query.seriesId + "|" + query.series + "|" + query.collectionId + "|" +
-         query.smartScopeId + "|" + query.libraryId;
+  return std::string("books|") + std::to_string(page) + "|" + query.sort + "|" + query.readStatus + "|" + query.order +
+         "|" + query.shelf + "|" + query.query + "|" + query.author + "|" + query.seriesId + "|" + query.series + "|" +
+         query.collectionId + "|" + query.smartScopeId + "|" + query.libraryId;
 }
 
 std::string facetCacheKey(const std::string& sectionId, const int page) {
@@ -158,17 +162,19 @@ bool loadCatalogCounts(BookOrbitCatalogCounts& outCounts) {
   outCounts.series = doc["series"] | -1;
   outCounts.collections = doc["collections"] | -1;
   outCounts.smartScopes = doc["smartScopes"] | -1;
+  outCounts.wantToRead = doc["wantToRead"] | -1;
   return true;
 }
 
 void saveCatalogCounts(const BookOrbitCatalogCounts& counts) {
   std::string json;
-  json.reserve(160);  // seven keys plus their digits, so the append chain never reallocates
+  json.reserve(176);  // eight keys plus their digits, so the append chain never reallocates
   json += "{\"totalBooks\":" + std::to_string(counts.totalBooks) +
           ",\"inProgress\":" + std::to_string(counts.inProgress) +
           ",\"libraries\":" + std::to_string(counts.libraries) + ",\"authors\":" + std::to_string(counts.authors) +
           ",\"series\":" + std::to_string(counts.series) + ",\"collections\":" + std::to_string(counts.collections) +
-          ",\"smartScopes\":" + std::to_string(counts.smartScopes) + "}";
+          ",\"smartScopes\":" + std::to_string(counts.smartScopes) +
+          ",\"wantToRead\":" + std::to_string(counts.wantToRead) + "}";
   writeJsonStringFile(cachePathForKey("counts"), json);
 }
 
@@ -228,7 +234,13 @@ bool loadBooksPage(const BookOrbitBookQuery& query, const int page, BookOrbitBoo
     book.id = item["id"] | 0;
     book.title = std::string(item["title"] | "");
     book.author = std::string(item["author"] | "");
+    book.series = std::string(item["series"] | "");
+    book.addedAt = item["addedAt"] | 0u;
     outPage.books.push_back(std::move(book));
+  }
+  for (JsonArrayConst letter : doc["letters"].as<JsonArrayConst>()) {
+    const char* key = letter[0] | "#";
+    outPage.letters.push_back({key[0] ? key[0] : '#', letter[1] | 0});
   }
   return true;
 }
@@ -248,10 +260,155 @@ void saveBooksPage(const BookOrbitBookQuery& query, const int page, const BookOr
     appendJsonEscaped(json, pageData.books[i].title);
     json += ",\"author\":";
     appendJsonEscaped(json, pageData.books[i].author);
+    // Only what the listing's sort fetched: see BookOrbitCatalogClient::fetchBooks.
+    if (!pageData.books[i].series.empty()) {
+      json += ",\"series\":";
+      appendJsonEscaped(json, pageData.books[i].series);
+    }
+    if (pageData.books[i].addedAt != 0) json += ",\"addedAt\":" + std::to_string(pageData.books[i].addedAt);
     json += "}";
   }
-  json += "]}";
+  json += "]";
+  if (!pageData.letters.empty()) {
+    json += ",\"letters\":[";
+    for (size_t i = 0; i < pageData.letters.size(); i++) {
+      if (i > 0) json += ",";
+      json += "[\"";
+      json +=
+          pageData.letters[i].letter == '"' || pageData.letters[i].letter == '\\' ? '#' : pageData.letters[i].letter;
+      json += "\"," + std::to_string(pageData.letters[i].row) + "]";
+    }
+    json += "]";
+  }
+  json += "}";
   writeJsonStringFile(cachePathForKey(booksCacheKey(query, page)), json);
 }
+
+bool saveDownloadResume(const BookOrbitDownloadResume& resume) {
+  std::string json;
+  json.reserve(512);  // the keys alone take ~250 bytes; one allocation covers typical titles
+  const auto addString = [&json](const char* key, const std::string& value) {
+    json += ",\"";
+    json += key;
+    json += "\":";
+    appendJsonEscaped(json, value);
+  };
+  const auto addNumber = [&json](const char* key, const long long value) {
+    json += ",\"";
+    json += key;
+    json += "\":";
+    json += std::to_string(value);
+  };
+  json += "{\"booksFromFacet\":";
+  json += resume.booksFromFacet ? "true" : "false";
+  addNumber("bookId", resume.bookId);
+  addNumber("fileId", resume.fileId);
+  addString("title", resume.title);
+  addString("path", resume.path);
+  addString("sort", resume.listQuery.sort);
+  addString("order", resume.listQuery.order);
+  addString("shelf", resume.listQuery.shelf);
+  addString("readStatus", resume.listQuery.readStatus);
+  addString("listDefaultReadStatus", resume.listDefaultReadStatus);
+  addString("query", resume.listQuery.query);
+  addString("author", resume.listQuery.author);
+  addString("seriesId", resume.listQuery.seriesId);
+  addString("series", resume.listQuery.series);
+  addString("collectionId", resume.listQuery.collectionId);
+  addString("smartScopeId", resume.listQuery.smartScopeId);
+  addString("libraryId", resume.listQuery.libraryId);
+  addString("listTitle", resume.listTitle);
+  addNumber("listPage", resume.listPage);
+  addNumber("selectorIndex", resume.selectorIndex);
+  addNumber("topIndex", resume.topIndex);
+  addString("facetSectionId", resume.facetSectionId);
+  addString("facetTitle", resume.facetTitle);
+  addNumber("facetPage", resume.facetPage);
+  addNumber("facetSelectorIndex", resume.facetSelectorIndex);
+  addNumber("facetTopIndex", resume.facetTopIndex);
+  addNumber("fromHome", resume.fromHome ? 1 : 0);
+  json += "}";
+  return writeJsonStringFile(BOOKORBIT_DOWNLOAD_RESUME_PATH, json);
+}
+
+bool takeDownloadResume(BookOrbitDownloadResume& outResume) {
+  std::string json;
+  const bool read = readJsonStringFile(BOOKORBIT_DOWNLOAD_RESUME_PATH, json);
+  Storage.remove(BOOKORBIT_DOWNLOAD_RESUME_PATH);
+  if (!read) {
+    LOG_ERR("BookOrbit", "No download to resume at %s", BOOKORBIT_DOWNLOAD_RESUME_PATH);
+    return false;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok) {
+    LOG_ERR("BookOrbit", "Unreadable download resume file");
+    return false;
+  }
+  const auto field = [&doc](const char* key) { return std::string(doc[key] | ""); };
+  outResume = BookOrbitDownloadResume{};
+  outResume.bookId = doc["bookId"] | int64_t{0};
+  outResume.fileId = doc["fileId"] | int64_t{0};
+  outResume.title = field("title");
+  outResume.path = field("path");
+  outResume.listQuery.sort = field("sort");
+  outResume.listQuery.order = field("order");
+  outResume.listQuery.shelf = field("shelf");
+  outResume.listQuery.readStatus = field("readStatus");
+  outResume.listDefaultReadStatus = field("listDefaultReadStatus");
+  outResume.listQuery.query = field("query");
+  outResume.listQuery.author = field("author");
+  outResume.listQuery.seriesId = field("seriesId");
+  outResume.listQuery.series = field("series");
+  outResume.listQuery.collectionId = field("collectionId");
+  outResume.listQuery.smartScopeId = field("smartScopeId");
+  outResume.listQuery.libraryId = field("libraryId");
+  outResume.listTitle = field("listTitle");
+  outResume.listPage = doc["listPage"] | 1;
+  outResume.booksFromFacet = doc["booksFromFacet"] | false;
+  outResume.selectorIndex = doc["selectorIndex"] | 0;
+  outResume.topIndex = doc["topIndex"] | 0;
+  outResume.facetSectionId = field("facetSectionId");
+  outResume.facetTitle = field("facetTitle");
+  outResume.facetPage = doc["facetPage"] | 1;
+  outResume.facetSelectorIndex = doc["facetSelectorIndex"] | 0;
+  outResume.facetTopIndex = doc["facetTopIndex"] | 0;
+  outResume.fromHome = (doc["fromHome"] | 0) != 0;
+  if (outResume.fileId == 0 || outResume.path.empty()) {
+    LOG_ERR("BookOrbit", "Download resume file names no file to fetch");
+    return false;
+  }
+  return true;
+}
+
+void discardDownloadResume() { Storage.remove(BOOKORBIT_DOWNLOAD_RESUME_PATH); }
+
+bool saveEntryLink(const BookOrbitCatalogLink& link) {
+  std::string json = "{\"bookId\":" + std::to_string(link.bookId) + ",\"sectionId\":";
+  appendJsonEscaped(json, link.sectionId);
+  json += ",\"title\":";
+  appendJsonEscaped(json, link.title);
+  json += "}";
+  return writeJsonStringFile(BOOKORBIT_ENTRY_LINK_PATH, json);
+}
+
+bool takeEntryLink(BookOrbitCatalogLink& outLink) {
+  if (!Storage.exists(BOOKORBIT_ENTRY_LINK_PATH)) return false;
+  std::string json;
+  const bool read = readJsonStringFile(BOOKORBIT_ENTRY_LINK_PATH, json);
+  Storage.remove(BOOKORBIT_ENTRY_LINK_PATH);
+  JsonDocument doc;
+  if (!read || deserializeJson(doc, json) != DeserializationError::Ok) {
+    LOG_ERR("BookOrbit", "Unreadable catalog link at %s", BOOKORBIT_ENTRY_LINK_PATH);
+    return false;
+  }
+  outLink = BookOrbitCatalogLink{};
+  outLink.bookId = doc["bookId"] | int64_t{0};
+  outLink.sectionId = doc["sectionId"] | "";
+  outLink.title = doc["title"] | "";
+  return outLink.bookId != 0 || !outLink.sectionId.empty();
+}
+
+void discardEntryLink() { Storage.remove(BOOKORBIT_ENTRY_LINK_PATH); }
 
 }  // namespace BookOrbitCatalogListCache

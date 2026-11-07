@@ -367,7 +367,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     MINIMAL = 5,
     DASHBOARD = 6,
     COVER_GRID = 7,
-    UI_THEME_COUNT = 8
+    BOOKORBIT = 8,
+    UI_THEME_COUNT = 9
   };
   enum RECENT_BOOKS_VIEW { RECENT_BOOKS_LIST = 0, RECENT_BOOKS_GRID = 1, RECENT_BOOKS_VIEW_COUNT };
 
@@ -498,6 +499,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // for a clock that survives sleep, and boards with a real RTC (X3) do not need it.
   // See HalPowerManager::startDeepSleep.
   uint8_t keepClockInSleep = 0;
+  // Let Check for Updates offer this fork's release candidates (GitHub pre-releases) as well
+  // as its final releases. Off by default: candidates are test builds.
+  uint8_t otaIncludePrereleases = 0;
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;

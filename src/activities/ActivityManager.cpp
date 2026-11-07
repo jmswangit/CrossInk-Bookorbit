@@ -4,6 +4,7 @@
 #include <HalScalableFont.h>
 #endif
 
+#include <BoardConfig.h>
 #include <CrossInkHalFrontlight.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 
+#include "BookOrbitCredentialStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
@@ -24,6 +26,7 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/BookOrbitCatalogBrowserActivity.h"
+#include "browser/BookOrbitCatalogListCache.h"
 #include "browser/OpdsBookBrowserActivity.h"
 #include "components/TouchRegistry.h"
 #include "home/AlertActivity.h"
@@ -973,11 +976,50 @@ void ActivityManager::goToBrowser() {
   }
 }
 
-void ActivityManager::goToBookOrbitCatalog() {
+bool ActivityManager::goToBookOrbitCatalog(const bool networkBootReady, const bool resumeDownload) {
+#if FREEINK_MCU_C3 && !defined(SIMULATOR)
+  // Like OPDS: browse from a minimal network boot, whose heap still has the 16 KB
+  // blocks the catalog's TLS records need page after page (issue #96). Without an
+  // account the browser only shows the setup hint, which needs no restart. The
+  // desktop build has no fragmented heap to clear, and its integration scenarios
+  // drive one restart at most, the download's.
+  if (!networkBootReady && BOOKORBIT_STORE.hasCredentials()) {
+    silentRestartToNetwork(NetworkBootTarget::BOOKORBIT_CATALOG);
+    return true;
+  }
+#endif
   // Replace (not push): clearing the activity stack under the browser frees the
   // 15-20KB of headroom the TLS session needs on the C3 (see .claude/CONTEXT.md).
   // The browser exits via goHome, so there is no stack to return to.
-  replaceActivity(std::make_unique<BookOrbitCatalogBrowserActivity>(renderer, mappedInput));
+  auto browser =
+      makeUniqueNoThrow<BookOrbitCatalogBrowserActivity>(renderer, mappedInput, networkBootReady, resumeDownload);
+  if (!browser) {
+    LOG_ERR("ACT", "OOM: BookOrbit catalog (free=%u maxAlloc=%u)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    return false;
+  }
+  replaceActivity(std::move(browser));
+  return true;
+}
+
+bool ActivityManager::goToBookOrbitCatalog(BookOrbitCatalogLink link) {
+#if FREEINK_MCU_C3 && !defined(SIMULATOR)
+  // The same network boot as goToBookOrbitCatalog(); the browser it starts reads the
+  // link back. If the link cannot be saved, the catalog opens in place as before.
+  if (BOOKORBIT_STORE.hasCredentials() && BookOrbitCatalogListCache::saveEntryLink(link)) {
+    silentRestartToNetwork(NetworkBootTarget::BOOKORBIT_CATALOG);
+    // Only returns when deep sleep is already under way, which ends this session anyway.
+    BookOrbitCatalogListCache::discardEntryLink();
+    return true;
+  }
+#endif
+  auto browser =
+      makeUniqueNoThrow<BookOrbitCatalogBrowserActivity>(renderer, mappedInput, false, false, std::move(link));
+  if (!browser) {
+    LOG_ERR("ACT", "OOM: BookOrbit catalog (free=%u maxAlloc=%u)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    return false;
+  }
+  replaceActivity(std::move(browser));
+  return true;
 }
 
 void ActivityManager::goToBookOrbitAuth() {

@@ -2,6 +2,7 @@
 
 #include "SimulatorSmokeTest.h"
 
+#include <BookOrbitCredentialStore.h>
 #include <Epub.h>
 #include <HalStorage.h>
 #include <LibraryBuilder.h>
@@ -1011,6 +1012,51 @@ class SimulatorSmokeTest {
     LOG_INF("SMOKE", "Wake Power hold/release ignored; fresh long press opens Quick Actions");
   }
 
+  // This fork's Cloudflare Access token: what the BookOrbit store keeps, forgets and sends.
+  static void verifyBookOrbitCloudflareToken() {
+    auto& store = BOOKORBIT_STORE;
+    JsonDocument saved;
+    store.toJson(saved);
+
+    store.setServerUrl("books.example.com");
+    store.setCfClientId("  0123abcd.access\n");
+    store.setCfClientSecret(" s3cret\r\n");
+    if (store.getCfClientId() != "0123abcd.access" || store.getCfClientSecret() != "s3cret") {
+      fail("Cloudflare Access token was not trimmed");
+    }
+    if (!store.sendsCfAccessToken()) fail("Cloudflare Access token withheld from an https server");
+    store.setServerUrl("http://192.168.1.10:3010");
+    if (store.sendsCfAccessToken()) fail("Cloudflare Access token offered to a plain http server");
+
+    JsonDocument written;
+    store.toJson(written);
+    const std::string obfuscated = written["cfClientSecret_obf"] | "";
+    if (obfuscated.empty() || obfuscated == "s3cret" || !written["cfClientSecret"].isNull()) {
+      fail("Cloudflare Access secret was not written obfuscated");
+    }
+    store.setCfClientSecret("");
+    if (!store.fromJson(written.as<JsonVariantConst>()) || store.getCfClientId() != "0123abcd.access" ||
+        store.getCfClientSecret() != "s3cret") {
+      fail("Cloudflare Access token did not survive a save and reload");
+    }
+
+    // A secret typed into the file by hand is valid base64 without being this device's
+    // encoding: it must be dropped, not decoded into random bytes and sent.
+    written["cfClientSecret_obf"] = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    if (!store.fromJson(written.as<JsonVariantConst>()) || !store.getCfClientSecret().empty()) {
+      fail("Cloudflare Access secret was accepted without this device's encoding");
+    }
+
+    store.setCfClientSecret("s3cret");
+    store.setCfClientId(" ");
+    if (!store.getCfClientSecret().empty() || store.sendsCfAccessToken()) {
+      fail("Emptying the Cloudflare Access Client ID kept its secret");
+    }
+
+    store.fromJson(saved.as<JsonVariantConst>());
+    LOG_INF("SMOKE", "BookOrbit Cloudflare Access token contract holds");
+  }
+
   static void verifyCachedHomeProgressMigration() {
     const RecentBook book{"/books/legacy-home-smoke.epub", "Legacy Home smoke", {}, {}};
     const std::string legacy = "/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}(book.path));
@@ -1291,6 +1337,7 @@ class SimulatorSmokeTest {
         }
         verifyLoadingPopupBackdrop();
         verifyCachedHomeProgressMigration();
+        verifyBookOrbitCloudflareToken();
         if (!CrossPointSettings::verifySleepTimeoutMigrationContract()) {
           fail("Sleep timeout migration contract failed");
         }
@@ -1864,11 +1911,11 @@ class SimulatorSmokeTest {
       }
 
       case SmokeStep::ThemeSettings: {
-        static constexpr uint8_t themes[] = {CrossPointSettings::LYRA_3_COVERS, CrossPointSettings::DASHBOARD,
-                                             CrossPointSettings::MINIMAL,       CrossPointSettings::COVER_GRID,
-                                             CrossPointSettings::LYRA,          CrossPointSettings::CLASSIC,
-                                             CrossPointSettings::ROUNDEDRAFF,   CrossPointSettings::LYRA_CAROUSEL,
-                                             CrossPointSettings::LYRA_CAROUSEL, CrossPointSettings::LYRA_CAROUSEL};
+        static constexpr uint8_t themes[] = {
+            CrossPointSettings::LYRA_3_COVERS, CrossPointSettings::DASHBOARD,     CrossPointSettings::MINIMAL,
+            CrossPointSettings::COVER_GRID,    CrossPointSettings::LYRA,          CrossPointSettings::CLASSIC,
+            CrossPointSettings::ROUNDEDRAFF,   CrossPointSettings::LYRA_CAROUSEL, CrossPointSettings::LYRA_CAROUSEL,
+            CrossPointSettings::LYRA_CAROUSEL, CrossPointSettings::BOOKORBIT};
         // Change the global values while the real Settings child is open, then
         // return through its real drawer callback. Compare with a fresh Home.
         {
@@ -1904,7 +1951,7 @@ class SimulatorSmokeTest {
             fail("Home after drawer theme change differs from fresh Home (pass %u)", homeThemePass);
         }
         LOG_INF("SMOKE", "Home theme/scale return matches fresh render (pass %u)", homeThemePass);
-        if (++homeThemePass == 10) {
+        if (++homeThemePass == 11) {
           LOG_INF("SMOKE", "Simulator smoke test passed");
           std::_Exit(0);
         }

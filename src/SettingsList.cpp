@@ -37,13 +37,13 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
     add(SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
                           {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_MINIMAL, StrId::STR_THEME_DASHBOARD,
                            StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED, StrId::STR_THEME_LYRA_CAROUSEL,
-                           StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_COVER_GRID},
+                           StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_COVER_GRID, StrId::STR_BOOKORBIT},
                           "uiTheme", StrId::STR_CAT_DISPLAY)
             .withEnumRawValues({CrossPointSettings::UI_THEME::CLASSIC, CrossPointSettings::UI_THEME::MINIMAL,
                                 CrossPointSettings::UI_THEME::DASHBOARD, CrossPointSettings::UI_THEME::LYRA,
                                 CrossPointSettings::UI_THEME::LYRA_3_COVERS,
                                 CrossPointSettings::UI_THEME::LYRA_CAROUSEL, CrossPointSettings::UI_THEME::ROUNDEDRAFF,
-                                CrossPointSettings::UI_THEME::COVER_GRID}));
+                                CrossPointSettings::UI_THEME::COVER_GRID, CrossPointSettings::UI_THEME::BOOKORBIT}));
     add(SettingInfo::Toggle(StrId::STR_SWAP_LIBRARY_FILE_BROWSER, &CrossPointSettings::swapLibraryFileBrowser,
                             "swapLibraryFileBrowser", StrId::STR_CAT_DISPLAY));
     add(SettingInfo::Enum(StrId::STR_UI_SCALE, &CrossPointSettings::uiScale, {StrId::STR_SMALL, StrId::STR_LARGE},
@@ -269,6 +269,8 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                            "readingIdleTimeThresholdUnits", StrId::STR_CAT_SYSTEM));
     add(SettingInfo::Toggle(StrId::STR_TRACK_READING_STATS, &CrossPointSettings::trackReadingStats, "trackReadingStats",
                             StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Toggle(StrId::STR_OTA_INCLUDE_PRERELEASES, &CrossPointSettings::otaIncludePrereleases,
+                            "otaIncludePrereleases", StrId::STR_CAT_SYSTEM));
 
     // Frontlight quick-panel state: persisted + web-exposed, category-less so
     // it stays off the Settings screen (edited from the swipe-down panel).
@@ -353,6 +355,22 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
           BOOKORBIT_STORE.saveToFile();
         },
         "boServerUrl", StrId::STR_BOOKORBIT_SYNC));
+    // Cloudflare Access service token: far too long for the on-screen keyboard, so these two
+    // have no counterpart in BookOrbitSettingsActivity.
+    add(SettingInfo::DynamicString(
+        StrId::STR_BOOKORBIT_CF_CLIENT_ID, [] { return BOOKORBIT_STORE.getCfClientId(); },
+        [](const std::string& v) {
+          BOOKORBIT_STORE.setCfClientId(v);
+          BOOKORBIT_STORE.saveToFile();
+        },
+        "boCfClientId", StrId::STR_BOOKORBIT_SYNC));
+    add(SettingInfo::DynamicString(
+        StrId::STR_BOOKORBIT_CF_CLIENT_SECRET, [] { return BOOKORBIT_STORE.getCfClientSecret(); },
+        [](const std::string& v) {
+          BOOKORBIT_STORE.setCfClientSecret(v);
+          BOOKORBIT_STORE.saveToFile();
+        },
+        "boCfClientSecret", StrId::STR_BOOKORBIT_SYNC));
     add(SettingInfo::DynamicEnum(
         StrId::STR_SYNC_BEHAVIOR, {StrId::STR_ASK_EVERY_TIME, StrId::STR_SMART_SYNC},
         [] { return static_cast<uint8_t>(BOOKORBIT_STORE.getSyncBehavior()); },

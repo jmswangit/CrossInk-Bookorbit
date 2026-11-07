@@ -613,8 +613,19 @@ which the reader re-stamps as chapters are opened. Capped at 256 records, matchi
 
 Binary layout (all little-endian):
 
+The watermark also records whether the file has been through an exchange: it stays `0`
+until the first exchange that goes through, which sets it to `1` when no upload moved it
+further. `1` is 1970-01-01 00:00:01 and hides no highlight. A sync reports the key set of
+a file that has been through an exchange as BookOrbit's `known` sidecar state, which
+BookOrbit 3.5.0 needs to honour the deletion of every synced highlight of a book instead
+of reading it as a lost copy. The mark lives in this file so that it is lost exactly
+when the records are: a file started over by a new highlight is not `known` until it has
+been through an exchange itself. Highlights received from the server are never uploaded
+(their clippings have no word range), so the watermark only ever follows highlights made
+on the device.
+
 - `[0-3]` magic + version: ASCII `BOA1`
-- `[4-7]` `watermark` (`uint32_t`, newest highlight timestamp the server has accepted, `0` when nothing has been sent)
+- `[4-7]` `watermark` (`uint32_t`, newest highlight timestamp the server has accepted; `1` after an exchange that sent nothing; `0` until the first exchange)
 - Repeated variable-length records:
   - `[0-3]` `timestamp` (`uint32_t`, `Clipping::timestamp`, seconds since boot; part of the join key)
   - `[4-7]` `identityEpoch` (`uint32_t`, the datetime the server keys on, real UTC epoch seconds)
@@ -645,8 +656,11 @@ reports it in the exchange acknowledgment.
 
 Binary layout (all little-endian):
 
+The watermark marks a file that has been through an exchange the same way as in
+`bookorbit_annotations.bin`.
+
 - `[0-3]` magic + version: ASCII `BOB1`
-- `[4-7]` `watermark` (`uint32_t`, newest identityEpoch the server has accepted)
+- `[4-7]` `watermark` (`uint32_t`, newest identityEpoch the server has accepted; `1` after an exchange that sent nothing; `0` until the first exchange)
 - Repeated variable-length records:
   - `[0-3]` `timestamp` (`uint32_t`, the bookmark's creation epoch; part of the join key)
   - `[4-7]` `identityEpoch` (`uint32_t`)
@@ -686,6 +700,49 @@ Binary layout (all little-endian):
   - `[14]` `flags` (`uint8_t`, bit0 = clock was approximate / not NTP-confirmed)
   - `[15]` reserved
 
+## `bookorbit_sync.bin`
+
+`bookorbit_sync.bin` is BookOrbit Smart sync's memory of a book, in the book's
+content-keyed state directory (`/.crosspoint/book_<contentHash>/`): what this device saw
+at the end of its last successful sync of the book. Every sync that settles the progress
+rewrites it (an upload, an applied server position, or both sides found at the same
+place), whichever Sync Behavior is selected. A sync that leaves the choice to the user,
+or that the sleep sync leaves for a manual sync, does not touch it.
+
+The file carries no version field: the two layouts share their magic and differ by
+length, the second being the first with a position appended. A release that only knows
+the first layout reads its 12 bytes of a longer file and ignores the rest.
+
+### Version 2
+
+Adds the position the sync left both sides at, in local pages. It is what tells a server
+position that only changed its date (BookOrbit's web reader saves the position a book
+opens at) from one that moved: the next sync counts the server as not having moved when
+its position, mapped into local pages, is in this spine item at or before this page, one
+page of tolerance included.
+`pageNumber` is a fraction of `pageCount`, so it still means the same place after the
+chapter is laid out again with another page count.
+
+Binary layout (all little-endian), 18 bytes:
+
+- `[0-3]` magic (`uint32_t`, `0x424F5359`, ASCII `YSOB` on disk)
+- `[4-11]` `timestamp` (`int64_t`, the server's progress timestamp in UTC epoch seconds:
+  the one it reported for an applied or matching position, the one this device sent
+  with an upload)
+- `[12-13]` `spineIndex` (`uint16_t`)
+- `[14-15]` `pageNumber` (`uint16_t`, zero-based page in that spine item)
+- `[16-17]` `pageCount` (`uint16_t`, page count of that spine item when the position was
+  recorded; `0` means no position, and the file reads as version 1)
+
+### Version 1
+
+Written up to v1.6.1+bookorbit.1: the first 12 bytes of version 2, the date alone. Still
+read; until the book's next settled sync rewrites it, the server counts as having moved
+whenever its timestamp is newer.
+
+A file shorter than 12 bytes, with another magic or with a timestamp of 0 or less, is no
+history at all: Smart sync then asks, and the sleep sync leaves the progress alone.
+
 ## `/.crosspoint/bookorbit_downloads.bin`
 
 ### Version 1
@@ -699,8 +756,9 @@ server's file naming template filed it, without walking the card. It is a
 best-effort convenience cache: entries are verified on lookup (the file must
 still exist with its recorded size) and dropped when stale, and a missing or
 discarded index costs the marker and the listing entry, leaving the filename
-heuristic and a flat directory scan as fallbacks. Capped at 128 entries, oldest
-evicted first.
+heuristic and a flat directory scan as fallbacks. Capped at 512 entries on boards
+with PSRAM and 192 on the X3/X4 (ESP32-C3), oldest evicted first, so the index
+fits beside the catalog's TLS session.
 
 Book ids are only meaningful on the server that issued them, so the header
 records a CRC32 of the configured server URL; the whole file is discarded when
@@ -715,6 +773,54 @@ Binary layout (all little-endian):
   - `[8-11]` `fileSize` (`uint32_t`, size of the downloaded file, for the replacement check)
   - `[12-13]` `pathLength` (`uint16_t`, 1-256)
   - `[14…]` `path` (`pathLength` bytes, absolute SD path, not null-terminated)
+
+## `/.crosspoint/daily_minutes.bin`
+
+### Version 1
+
+Reading time per calendar day for the BookOrbit Home theme. Written whichever theme is
+active, so the theme has a history from the moment it is chosen. Kept out of
+`global_stats.bin` because that file is also the nearby stats sync's payload, and its
+history and time buckets are only recorded on boards with a clock chip: this file also
+runs on the system clock that a board without one sets over Wi-Fi. Entries are updated in
+place. A file of another size or with another magic is replaced.
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic, `BODM` |
+| 4 | 1 | Version |
+| 5 | 3 | Reserved |
+| 8 | 4 | `lastDay`: the newest day written, as days since 2000-01-01 |
+| 12 | 16 | `uint32_t` seconds read in each time of day: morning, afternoon, evening, night |
+| 28 | 742 | 371 `uint16_t` slots, indexed by `dayIndex % 371`, counting tens of seconds |
+| 770 | 742 | 371 `uint16_t` pending slots, indexed the same way: the part of each day the BookOrbit Home snapshot does not hold yet |
+
+Recording reading adds it to both slots of its days. Each new BookOrbit Home snapshot
+clears the pending slots, then puts back what still waits in the books'
+`bookorbit_stats.bin` upload queues, summed per local day; Home shows the server's
+minutes plus the pending ones. Moving `lastDay` forward clears both slots of the days it
+uncovers. All values are little-endian.
+
+## `/.crosspoint/bookorbit_home.bin`
+
+### Version 1
+
+What the BookOrbit Home shows from the server, so that opening Home never touches the
+network. A sync writes it to `bookorbit_home.tmp` and renames it into place. A file with
+another magic, version or struct size is ignored until the next sync replaces it.
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic, `0x484F4242` |
+| 4 | 2 | Version |
+| 6 | 2 | `sizeof(BookOrbitHomeSnapshot)` |
+| 8 | struct | `BookOrbitHomeSnapshot` (`src/BookOrbitHomeStore.h`), as laid out in memory: both MCU families are 32-bit little-endian with the same alignment |
+| after | 2 each | `yearDayCount` `uint16_t` minutes per day, the first being `yearFirstDay` |
+
+Covers live in `/.crosspoint/bookorbit_home/`: `<id>_<version>_<w>x<h>.bmp` is what Home
+draws, and `<id>_<version>.jpg` is a fetched cover waiting for a heap the JPEG decoder
+fits in. `<version>` hashes the server's `updatedAt`, so a changed cover gets a new file.
+A sync removes files nothing shows once the folder holds more than 30.
 
 ## `/.crosspoint/wallclock.bin`
 
