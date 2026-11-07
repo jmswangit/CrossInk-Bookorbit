@@ -1357,7 +1357,9 @@ void BookOrbitHomeUi::drawShelf(const Rect& tile, const char* title, const freei
       const int markY = slot.y + 3;
       renderer.fillRoundedRect(markX, markY, markSize, markSize, markSize / 2, Color::White);
       renderer.drawRoundedRect(markX, markY, markSize, markSize, 1, markSize / 2, true);
-      drawLucideIcon(renderer, icon_home_check_24, markX, markY);
+      // A card, not a check: this badge means the book is already on the SD card, not
+      // that it has been read (a check read as "finished" on unread catalog books).
+      drawLucideIcon(renderer, icon_home_card_24, markX, markY);
     }
   }
 }
