@@ -626,15 +626,36 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   constexpr int MAX_IMAGE_WIDTH = 2048;
   constexpr int MAX_IMAGE_HEIGHT = 3072;
 
-  if (srcWidth <= 0 || srcHeight <= 0 || srcWidth > MAX_IMAGE_WIDTH || srcHeight > MAX_IMAGE_HEIGHT) {
-    LOG_DBG("JPG", "Image too large or invalid (%dx%d), max supported: %dx%d", srcWidth, srcHeight, MAX_IMAGE_WIDTH,
-            MAX_IMAGE_HEIGHT);
+  if (srcWidth <= 0 || srcHeight <= 0) {
+    LOG_DBG("JPG", "Invalid image (%dx%d)", srcWidth, srcHeight);
     return false;
   }
 
-  const int effectiveSrcW = progressive ? (srcWidth + 7) / 8 : srcWidth;
-  const int effectiveSrcH = progressive ? (srcHeight + 7) / 8 : srcHeight;
-  const int decodeFlags = progressive ? JPEG_SCALE_EIGHTH : 0;
+  // Covers are often far larger than the slot they are drawn in (4500x6000 is not
+  // unusual), and decoding those at full size needs a working row wider than the
+  // limits below. JPEGDEC can hand back a half, quarter or eighth-scale decode, so
+  // ask for the smallest reduction that fits instead of rejecting the cover. The
+  // existing scaler then takes the reduced image down to the target. Progressive
+  // JPEGs already require eighth scale for the MCU_SKIP patch, so they keep it.
+  const auto scaledUp = [](const int value, const int shift) {
+    return (value + (1 << shift) - 1) >> shift;
+  };
+  int scaleShift = progressive ? 3 : 0;
+  while (scaleShift < 3 && (scaledUp(srcWidth, scaleShift) > MAX_IMAGE_WIDTH ||
+                            scaledUp(srcHeight, scaleShift) > MAX_IMAGE_HEIGHT)) {
+    scaleShift++;
+  }
+
+  const int effectiveSrcW = scaledUp(srcWidth, scaleShift);
+  const int effectiveSrcH = scaledUp(srcHeight, scaleShift);
+  if (effectiveSrcW > MAX_IMAGE_WIDTH || effectiveSrcH > MAX_IMAGE_HEIGHT) {
+    LOG_DBG("JPG", "Image too large (%dx%d even at 1/8 scale)", srcWidth, srcHeight);
+    return false;
+  }
+  const int decodeFlags = scaleShift == 3   ? JPEG_SCALE_EIGHTH
+                          : scaleShift == 2 ? JPEG_SCALE_QUARTER
+                          : scaleShift == 1 ? JPEG_SCALE_HALF
+                                            : 0;
 
   // Calculate output dimensions. Crop mode behaves like CSS object-fit: cover:
   // scale to fill the requested box, then sample a centered source crop before dithering.

@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <set>
 
 #include "BookOrbitCredentialStore.h"
 #include "BookOrbitDownloadIndex.h"
@@ -120,6 +121,25 @@ uint8_t onCardMask(const BookOrbitHomeBook* books, const int count) {
   return mask;
 }
 
+// Distinct authors and series in the Library's index. Only the fixed-size record
+// section is read: authorKey is the index's folded author key and the first bytes of
+// seriesKey are its folded series name, so neither needs a name-blob read per book.
+void countLibraryAuthorsAndSeries(library::LibraryIndexFile& index, int32_t& authors, int32_t& series) {
+  std::set<std::string> authorKeys;
+  std::set<std::string> seriesKeys;
+  library::ClixRecord record{};
+  for (uint16_t i = 0; i < index.bookCount(); i++) {
+    if (!index.readRecord(i, record)) continue;
+    if (record.authorKeyLen > 0) authorKeys.emplace(record.authorKey, record.authorKeyLen);
+    // No series is 0xFF throughout (see LibraryBuilder); a real folded name is UTF-8.
+    if (static_cast<uint8_t>(record.seriesKey[0]) != 0xFF) {
+      seriesKeys.emplace(record.seriesKey, library::CLIX_SERIES_FOLD_BYTES);
+    }
+  }
+  authors = static_cast<int32_t>(authorKeys.size());
+  series = static_cast<int32_t>(seriesKeys.size());
+}
+
 // Decimal gigabytes, as card capacities are sold: one decimal under 10 GB.
 void formatGigabytes(const uint64_t bytes, char* out, const size_t outSize) {
   const auto tenths = static_cast<unsigned long>((bytes + 50000000ull) / 100000000ull);
@@ -174,11 +194,25 @@ void BookOrbitHomeUi::begin(const Source& source) {
     if (snapshot && !BookOrbitHomeStore::load(*snapshot)) snapshot.reset();
   }
 
-  // Only the index header is read: the count as of the Library's last scan, no card walk.
+  // Only the index is read: the counts as of the Library's last scan, no card walk.
+  // Author and series names are counted once per index size, not on every begin().
   cardBookCount = -1;
-  if (snapshot && Storage.exists(library::libraryIndexPath())) {
+  bool indexRead = false;
+  if (Storage.exists(library::libraryIndexPath())) {
     library::LibraryIndexFile index;
-    if (index.open(library::libraryIndexPath())) cardBookCount = index.bookCount();
+    if (index.open(library::libraryIndexPath())) {
+      indexRead = true;
+      cardBookCount = index.bookCount();
+      if (libraryCountsBookCount != cardBookCount) {
+        countLibraryAuthorsAndSeries(index, libraryAuthorCount, librarySeriesCount);
+        libraryCountsBookCount = cardBookCount;
+      }
+    }
+  }
+  if (!indexRead) {
+    libraryAuthorCount = -1;
+    librarySeriesCount = -1;
+    libraryCountsBookCount = -1;
   }
   if (snapshot) readCardSpace(cardTotalBytes, cardUsedBytes);
 
@@ -256,7 +290,6 @@ void BookOrbitHomeUi::computeReadingData() {
   streak = 0;
   lastSevenDays = 0;
   weekMinutes.fill(0);
-  weekTotal = 0;
   yearLevels.fill(0);
   yearCellCount = 0;
   yearDaysRead = 0;
@@ -348,7 +381,6 @@ void BookOrbitHomeUi::computeReadingData() {
     if (day + 7u > todayIndex) {
       const size_t slot = day + 6u - todayIndex;
       weekMinutes[slot] = minutes;
-      weekTotal += minutes;
       if (read) lastSevenDays |= static_cast<uint8_t>(1u << slot);
     }
     if (day + kForecastPaceDays > todayIndex) recentMinutes += minutes;
@@ -393,6 +425,7 @@ void BookOrbitHomeUi::computeLayout() {
   addStop(currentBookTile(), kBookRadius, kRingOutset, hasBooks ? Action::OpenBook : Action::OpenLibrary);
   addStop(showStats ? cell(1, 3) : cell(0, 2, 2), kTileRadius, kRingOutset,
           hasAccount ? Action::Refresh : Action::OpenLibrary);
+  if (showStats) addStop(cell(1, 2), kTileRadius, kRingOutset, Action::OpenLibrary);
   const Rect also = alsoReadingTile();
   for (int i = 0; i < rowCount; i++) {
     const Row& row = rows[static_cast<size_t>(i)];
@@ -812,7 +845,7 @@ void BookOrbitHomeUi::drawHomePage() {
   drawCurrentBook(currentBookTile());
   if (showStats) {
     drawStreak(cell(0, 2));
-    drawWeek(cell(1, 2));
+    drawLibraryStats(cell(1, 2));
     drawGoal(cell(0, 3));
     drawAccountTile(cell(1, 3));
   } else {
@@ -896,29 +929,24 @@ void BookOrbitHomeUi::drawStreak(const Rect& tile) const {
   }
 }
 
-void BookOrbitHomeUi::drawWeek(const Rect& tile) const {
-  drawTileHeader(tile, tr(STR_HOME_THIS_WEEK));
-  if (weekTotal > 0) {
-    char total[16];
-    formatCompactReadingDuration(weekTotal * 60u, total, sizeof(total));
-    drawRightAligned(UI_10_FONT_ID, tile.x + tile.width - kPad, tile.y + 7, total, true);
+void BookOrbitHomeUi::drawLibraryStats(const Rect& tile) const {
+  drawTileHeader(tile, tr(STR_LIBRARY), &icon_home_books_24);
+  char books[12] = "-";
+  char authors[12] = "-";
+  char series[12] = "-";
+  if (cardBookCount >= 0) snprintf(books, sizeof(books), "%ld", static_cast<long>(cardBookCount));
+  if (libraryAuthorCount >= 0) snprintf(authors, sizeof(authors), "%ld", static_cast<long>(libraryAuthorCount));
+  if (librarySeriesCount >= 0) snprintf(series, sizeof(series), "%ld", static_cast<long>(librarySeriesCount));
+  // A one-row tile is about 50 px tall, so the three counts share one small-font line
+  // under the header rather than the two-line columns the Library page can afford.
+  char cells[3][40];
+  snprintf(cells[0], sizeof(cells[0]), "%s %s", books, tr(STR_HOME_BOOKS));
+  snprintf(cells[1], sizeof(cells[1]), "%s %s", authors, tr(STR_HOME_AUTHORS));
+  snprintf(cells[2], sizeof(cells[2]), "%s %s", series, tr(STR_HOME_SERIES));
+  const int columnWidth = (tile.width - 2 * kPad) / 3;
+  for (int i = 0; i < 3; i++) {
+    drawFitted(SMALL_FONT_ID, tile.x + kPad + i * columnWidth, tile.y + 32, cells[i], columnWidth - 6);
   }
-
-  // The last seven days, oldest first, so today's initial depends on the date.
-  const char* initials = tr(STR_HOME_WEEKDAY_INITIALS);
-  char rotated[32] = {};
-  size_t used = 0;
-  const int todayOfWeek = hasToday ? readingStatsDayOfWeekIndex(today.date) : 6;
-  for (int i = 0; i < 7; i++) {
-    char initial[5];
-    copyInitial(initials, (todayOfWeek + 1 + i) % 7, initial, sizeof(initial));
-    const size_t length = strlen(initial);
-    if (used + length >= sizeof(rotated)) break;
-    memcpy(rotated + used, initial, length);
-    used += length;
-  }
-  drawColumnChart(Rect{tile.x + kPad, tile.y + 36, tile.width - 2 * kPad, tile.height - 36 - 4}, weekMinutes.data(), 7,
-                  6, rotated);
 }
 
 void BookOrbitHomeUi::drawGoal(const Rect& tile) const {

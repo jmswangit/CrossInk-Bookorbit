@@ -122,7 +122,8 @@ class BookOrbitHomeUi final {
   void drawHomePage();
   void drawCurrentBook(const Rect& tile) const;
   void drawStreak(const Rect& tile) const;
-  void drawWeek(const Rect& tile) const;
+  // The custom Library's card counts, with a tap opening that Library.
+  void drawLibraryStats(const Rect& tile) const;
   void drawGoal(const Rect& tile) const;
   void drawAccountTile(const Rect& tile) const;
   void drawAlsoReading(const Rect& tile) const;
@@ -177,7 +178,6 @@ class BookOrbitHomeUi final {
   uint16_t longestStreak = 0;
   uint8_t lastSevenDays = 0;  // bit 0 is six days ago, bit 6 is today
   std::array<uint32_t, 7> weekMinutes{};
-  uint32_t weekTotal = 0;
   std::array<float, MAX_BOOKS> bookProgress{};
   uint32_t estimatedSecondsLeft = 0;
   ReadingStatsDate finishDate;
@@ -205,6 +205,11 @@ class BookOrbitHomeUi final {
   uint8_t recentOnCard = 0;
   // Books the Library's index counted on its last scan; -1 before the first one.
   int32_t cardBookCount = -1;
+  // The same index's distinct author and series counts, cached until its book count
+  // changes. -1 when the index has not been read.
+  int32_t libraryAuthorCount = -1;
+  int32_t librarySeriesCount = -1;
+  int32_t libraryCountsBookCount = -1;
   int32_t serverBookCount = 0;  // catalog downloads recorded in BookOrbitDownloadIndex
   uint64_t cardTotalBytes = 0;  // 0 when the card did not say
   uint64_t cardUsedBytes = 0;

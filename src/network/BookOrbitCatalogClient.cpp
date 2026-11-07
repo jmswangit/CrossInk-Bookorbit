@@ -475,6 +475,9 @@ HttpDownloader::DownloadError BookOrbitCatalogClient::downloadThumbnail(const in
   options.extraHeaders = authHeaders();
   options.transport = HttpDownloader::Transport::WOLFSSL;
   options.clientRxBufferSize = 2048;
+  // A cover can be close to 100 KB and so spans many TLS records, like a book: size
+  // wolfSSL's input buffer for a full record up front rather than growing it mid-transfer.
+  options.largeBody = true;
   if (shouldStop != nullptr) options.shouldCancel = shouldStop;
   return HttpDownloader::downloadToFile(url, destPath, nullptr, nullptr, "", "", std::move(options));
 }
