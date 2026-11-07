@@ -121,15 +121,19 @@ uint8_t onCardMask(const BookOrbitHomeBook* books, const int count) {
   return mask;
 }
 
-// Distinct authors and series in the Library's index. Only the fixed-size record
-// section is read: authorKey is the index's folded author key and the first bytes of
-// seriesKey are its folded series name, so neither needs a name-blob read per book.
-void countLibraryAuthorsAndSeries(library::LibraryIndexFile& index, int32_t& authors, int32_t& series) {
+// EPUB-only counts from the Library's index. Only the fixed-size record section is
+// read: authorKey is the index's folded author key and the first bytes of seriesKey
+// are its folded series name, so neither needs a name-blob read per book. Other
+// formats in the index (XTX, TXT, Markdown) are not counted.
+void countLibraryStats(library::LibraryIndexFile& index, int32_t& books, int32_t& authors, int32_t& series) {
   std::set<std::string> authorKeys;
   std::set<std::string> seriesKeys;
   library::ClixRecord record{};
+  books = 0;
   for (uint16_t i = 0; i < index.bookCount(); i++) {
     if (!index.readRecord(i, record)) continue;
+    if ((record.flags & library::CLIX_BOOK_FLAG_EPUB) == 0) continue;
+    books++;
     if (record.authorKeyLen > 0) authorKeys.emplace(record.authorKey, record.authorKeyLen);
     // No series is 0xFF throughout (see LibraryBuilder); a real folded name is UTF-8.
     if (static_cast<uint8_t>(record.seriesKey[0]) != 0xFF) {
@@ -204,12 +208,13 @@ void BookOrbitHomeUi::begin(const Source& source) {
       indexRead = true;
       cardBookCount = index.bookCount();
       if (libraryCountsBookCount != cardBookCount) {
-        countLibraryAuthorsAndSeries(index, libraryAuthorCount, librarySeriesCount);
+        countLibraryStats(index, libraryEpubCount, libraryAuthorCount, librarySeriesCount);
         libraryCountsBookCount = cardBookCount;
       }
     }
   }
   if (!indexRead) {
+    libraryEpubCount = -1;
     libraryAuthorCount = -1;
     librarySeriesCount = -1;
     libraryCountsBookCount = -1;
@@ -426,14 +431,11 @@ void BookOrbitHomeUi::computeLayout() {
   addStop(showStats ? cell(1, 3) : cell(0, 2, 2), kTileRadius, kRingOutset,
           hasAccount ? Action::Refresh : Action::OpenLibrary);
   if (showStats) addStop(cell(1, 2), kTileRadius, kRingOutset, Action::OpenLibrary);
-  const Rect also = alsoReadingTile();
-  for (int i = 0; i < rowCount; i++) {
-    const Row& row = rows[static_cast<size_t>(i)];
-    if (row.local != nullptr) {
-      addStop(bookRowRect(also, i), 6, 0, Action::OpenBook, i + 1);
-    } else {
-      addStop(bookRowRect(also, i), 6, 0, Action::OpenCatalogBook, row.remoteArg);
-    }
+  const Rect bottom = alsoReadingTile();
+  if (snapshot && snapshot->highlightText[0] != '\0') {
+    addStop(bottom, kTileRadius, kRingOutset, Action::OpenSavedItems);
+  } else if (showStats) {
+    addStop(bottom, kTileRadius, kRingOutset, Action::OpenStats);
   }
 
   // Library.
@@ -459,8 +461,13 @@ void BookOrbitHomeUi::computeLayout() {
     const bool hasBadge = snapshot && snapshot->badgeThreshold > 0;
     addStop(statsCell(0, 0, 2), kTileRadius, kRingOutset, Action::OpenStats);
     if (hasBooks) addStop(statsCell(0, 1, hasBadge ? 1 : 2), kTileRadius, kRingOutset, Action::OpenBook);
-    if (snapshot && snapshot->highlightText[0] != '\0') {
-      addStop(statsCell(0, 4, 2), kTileRadius, kRingOutset, Action::OpenSavedItems);
+    if (rowCount > 0) {
+      const Row& first = rows[0];
+      if (first.local != nullptr) {
+        addStop(statsCell(0, 4, 2), kTileRadius, kRingOutset, Action::OpenBook, 1);
+      } else {
+        addStop(statsCell(0, 4, 2), kTileRadius, kRingOutset, Action::OpenCatalogBook, first.remoteArg);
+      }
     }
   }
 
@@ -851,7 +858,12 @@ void BookOrbitHomeUi::drawHomePage() {
   } else {
     drawAccountTile(cell(0, 2, 2));
   }
-  drawAlsoReading(alsoReadingTile());
+  const Rect bottom = alsoReadingTile();
+  if (snapshot && snapshot->highlightText[0] != '\0') {
+    drawHighlight(bottom);
+  } else {
+    drawActivity(bottom);
+  }
 }
 
 void BookOrbitHomeUi::drawCurrentBook(const Rect& tile) const {
@@ -930,22 +942,23 @@ void BookOrbitHomeUi::drawStreak(const Rect& tile) const {
 }
 
 void BookOrbitHomeUi::drawLibraryStats(const Rect& tile) const {
-  drawTileHeader(tile, tr(STR_LIBRARY), &icon_home_books_24);
+  drawTileFrame(tile);
   char books[12] = "-";
   char authors[12] = "-";
   char series[12] = "-";
-  if (cardBookCount >= 0) snprintf(books, sizeof(books), "%ld", static_cast<long>(cardBookCount));
+  if (libraryEpubCount >= 0) snprintf(books, sizeof(books), "%ld", static_cast<long>(libraryEpubCount));
   if (libraryAuthorCount >= 0) snprintf(authors, sizeof(authors), "%ld", static_cast<long>(libraryAuthorCount));
   if (librarySeriesCount >= 0) snprintf(series, sizeof(series), "%ld", static_cast<long>(librarySeriesCount));
-  // A one-row tile is about 50 px tall, so the three counts share one small-font line
-  // under the header rather than the two-line columns the Library page can afford.
-  char cells[3][40];
-  snprintf(cells[0], sizeof(cells[0]), "%s %s", books, tr(STR_HOME_BOOKS));
-  snprintf(cells[1], sizeof(cells[1]), "%s %s", authors, tr(STR_HOME_AUTHORS));
-  snprintf(cells[2], sizeof(cells[2]), "%s %s", series, tr(STR_HOME_SERIES));
-  const int columnWidth = (tile.width - 2 * kPad) / 3;
+  char lines[3][40];
+  snprintf(lines[0], sizeof(lines[0]), "%s: %s", tr(STR_HOME_BOOKS), books);
+  snprintf(lines[1], sizeof(lines[1]), "%s: %s", tr(STR_HOME_AUTHORS), authors);
+  snprintf(lines[2], sizeof(lines[2]), "%s: %s", tr(STR_HOME_SERIES), series);
+  // The tile is one grid row (about 50 px), so the three counts take a line each in
+  // the smallest font, vertically centred; no header, which would push the last out.
+  const int lineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  const int top = tile.y + std::max(2, (tile.height - 3 * lineHeight) / 2);
   for (int i = 0; i < 3; i++) {
-    drawFitted(SMALL_FONT_ID, tile.x + kPad + i * columnWidth, tile.y + 32, cells[i], columnWidth - 6);
+    drawFitted(SMALL_FONT_ID, tile.x + kPad, top + i * lineHeight, lines[i], tile.width - 2 * kPad);
   }
 }
 
@@ -1017,38 +1030,44 @@ void BookOrbitHomeUi::drawSyncAge(const Rect& tile) const {
 }
 
 void BookOrbitHomeUi::drawAlsoReading(const Rect& tile) const {
-  drawTileHeader(tile, tr(STR_HOME_ALSO_READING));
-  char all[24];
-  snprintf(all, sizeof(all), tr(STR_HOME_ALL_FORMAT), static_cast<unsigned>(data.recentBookCount));
-  drawRightAligned(SMALL_FONT_ID, tile.x + tile.width - kPad, tile.y + 9, all);
+  drawTileFrame(tile);
+  if (rowCount <= 0) {
+    drawFitted(SMALL_FONT_ID, tile.x + kPad, tile.y + (tile.height - renderer.getLineHeight(SMALL_FONT_ID)) / 2,
+               tr(STR_HOME_ALSO_READING), tile.width - 2 * kPad, true);
+    return;
+  }
 
-  for (int i = 0; i < rowCount; i++) {
-    const Row& book = rows[static_cast<size_t>(i)];
-    const Rect row = bookRowRect(tile, i);
-    const Rect slot = coverSlot(i + 1);
-    const char* title = "";
-    if (book.local != nullptr) {
-      drawCover(*book.local, slot, false);
-      title = displayTitle(*book.local);
-    } else {
-      char path[64];
-      BookOrbitHomeStore::coverPath(*book.remote, slot.width, slot.height, path, sizeof(path));
-      drawCoverFile(path, slot, false);
-      title = book.remote->title;
-    }
+  // The stats page's last row is one short row: fit the first other book there, with a
+  // tiny cover, its title and its progress, rather than the full list Home used to show.
+  const Row& book = rows[0];
+  const int coverH = std::max(16, tile.height - 6);
+  const int coverW = coverH * 2 / 3;
+  const Rect slot{tile.x + kPad, tile.y + 3, coverW, coverH};
+  const char* title = "";
+  if (book.local != nullptr) {
+    drawCover(*book.local, slot, false);
+    title = displayTitle(*book.local);
+  } else {
+    char path[64];
+    BookOrbitHomeStore::coverPath(*book.remote, slot.width, slot.height, path, sizeof(path));
+    drawCoverFile(path, slot, false);
+    title = book.remote->title;
+  }
 
-    const int x = slot.x + slot.width + 12;
-    const int width = tile.x + tile.width - kPad - x;
-    drawFitted(UI_10_FONT_ID, x, row.y + 4, title, width, true);
-    if (!book.onCard) {
-      drawLucideIcon(renderer, icon_home_cloud_down_24, tile.x + tile.width - kPad - 66, row.y + 28);
-    }
-    if (book.progress >= 0.0f) {
-      char percent[8];
-      formatPercent(book.progress, percent, sizeof(percent));
-      drawProgressBar(x, row.y + 36, width - 76, 7, book.progress / 100.0f);
-      drawRightAligned(SMALL_FONT_ID, tile.x + tile.width - kPad, row.y + 29, percent);
-    }
+  const int x = slot.x + slot.width + 8;
+  const int width = tile.x + tile.width - kPad - x;
+  drawFitted(SMALL_FONT_ID, x, tile.y + 3, title, width, true);
+  if (book.progress >= 0.0f) {
+    char percent[8];
+    formatPercent(book.progress, percent, sizeof(percent));
+    const int percentWidth = renderer.getTextWidth(SMALL_FONT_ID, percent);
+    const int barY = tile.y + tile.height - 10;
+    drawProgressBar(x, barY, std::max(0, width - percentWidth - 6), 6, book.progress / 100.0f);
+    drawRightAligned(SMALL_FONT_ID, tile.x + tile.width - kPad, tile.y + tile.height - 17, percent);
+  } else if (rowCount > 1) {
+    char more[12];
+    snprintf(more, sizeof(more), "+%d", rowCount - 1);
+    drawRightAligned(SMALL_FONT_ID, tile.x + tile.width - kPad, tile.y + tile.height - 17, more);
   }
 }
 
@@ -1064,11 +1083,7 @@ void BookOrbitHomeUi::drawStatsPage() {
   drawTimeOfDay(statsCell(0, 2));
   drawWeekdays(statsCell(1, 2));
   drawRecords(statsCell(0, 3, 2));
-  if (snapshot && snapshot->highlightText[0] != '\0') {
-    drawHighlight(statsCell(0, 4, 2));
-  } else {
-    drawActivity(statsCell(0, 4, 2));
-  }
+  drawAlsoReading(statsCell(0, 4, 2));
 }
 
 void BookOrbitHomeUi::drawYear(const Rect& tile) const {

@@ -205,8 +205,9 @@ class BookOrbitHomeUi final {
   uint8_t recentOnCard = 0;
   // Books the Library's index counted on its last scan; -1 before the first one.
   int32_t cardBookCount = -1;
-  // The same index's distinct author and series counts, cached until its book count
-  // changes. -1 when the index has not been read.
+  // The same index's EPUB count and its distinct author and series counts, cached
+  // until its book count changes. -1 when the index has not been read.
+  int32_t libraryEpubCount = -1;
   int32_t libraryAuthorCount = -1;
   int32_t librarySeriesCount = -1;
   int32_t libraryCountsBookCount = -1;
