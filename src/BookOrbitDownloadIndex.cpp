@@ -3,6 +3,7 @@
 #include <BookOrbitCredentialStore.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <Serialization.h>
 #include <uzlib.h>
 
@@ -16,7 +17,11 @@ constexpr char INDEX_PATH[] = "/.crosspoint/bookorbit_downloads.bin";
 // download. A file whose magic or server CRC does not match is discarded: book ids
 // only mean something on the server that issued them.
 constexpr char INDEX_MAGIC[4] = {'B', 'O', 'D', '1'};
-constexpr size_t MAX_ENTRIES = 128;  // FIFO eviction; evicted books fall back to the filename heuristic
+// FIFO eviction; evicted books fall back to the filename heuristic. The index lives
+// in internal RAM for the whole catalog session, so it stays bounded: PSRAM boards
+// hold a full library's worth, while the C3 X3/X4 keep a smaller cap for the TLS
+// session browsing needs.
+size_t maxEntries() { return psramHeapAvailable() ? 512 : 192; }
 constexpr uint16_t PATH_MAX_LEN = 256;
 
 struct Entry {
@@ -53,8 +58,9 @@ void ensureLoaded() {
     return;
   }
 
-  entries.reserve(MAX_ENTRIES);
-  while (entries.size() < MAX_ENTRIES) {
+  const size_t limit = maxEntries();
+  entries.reserve(limit);
+  while (entries.size() < limit) {
     Entry entry;
     uint16_t pathLen = 0;
     if (!serialization::tryReadPod(f, entry.bookId)) break;  // clean end of file
@@ -137,7 +143,7 @@ void BookOrbitDownloadIndex::record(const int64_t bookId, const std::string& pat
   entries.erase(std::remove_if(entries.begin(), entries.end(),
                                [bookId, &path](const Entry& e) { return e.bookId == bookId || e.path == path; }),
                 entries.end());
-  if (entries.size() >= MAX_ENTRIES) {
+  if (entries.size() >= maxEntries()) {
     entries.erase(entries.begin());
   }
   Entry entry;

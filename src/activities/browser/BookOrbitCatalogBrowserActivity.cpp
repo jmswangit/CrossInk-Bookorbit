@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <iterator>
 #include <utility>
 
@@ -21,6 +22,8 @@
 #include "AppVersion.h"
 #include "BookOrbitCredentialStore.h"
 #include "BookOrbitDownloadIndex.h"
+#include "BookOrbitSyncClient.h"
+#include "KOReaderDocumentId.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
@@ -152,7 +155,15 @@ void addCountBadge(Entry& entry, const int count) {
 
 constexpr size_t BOOKORBIT_DOWNLOAD_BUFFER_SIZE = 2048;
 constexpr char READ_FOLDER_PREFIX[] = "/Read";
-constexpr size_t MAX_LOCAL_ENTRIES = 200;
+// Local listings are sorted whole in RAM, so their size stays bounded. PSRAM boards
+// reserve enough rows for a real library; the C3 keeps a smaller cap so the listing
+// still fits beside the network buffers a catalog session uses.
+size_t maxLocalEntries() { return psramHeapAvailable() ? 512 : 256; }
+// Device scan: hash unindexed EPUBs, then ask the server which catalog books they
+// are. The batch stays small so the request and its reply fit beside the TLS session.
+constexpr size_t SCAN_MATCH_BATCH = 100;
+// The Library's own walk cap: a corrupted FAT can contain a folder that contains itself.
+constexpr int SCAN_MAX_DEPTH = 5;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 1000;
 constexpr unsigned long DOWNLOAD_PROGRESS_MAX_UPDATE_MS = 5000;
@@ -229,6 +240,49 @@ std::string bookTitleFromPath(const std::string& path) {
   const size_t start = slash == std::string::npos ? 0 : slash + 1;
   const size_t end = path.size() > start + 5 ? path.size() - 5 : path.size();  // strip ".epub"
   return path.substr(start, end - start);
+}
+
+std::string joinSdPath(const std::string& dir, const char* name) {
+  if (dir == "/") return std::string("/") + name;
+  return dir + "/" + name;
+}
+
+// Calls visit(path) for every EPUB under `dir`, skipping hidden entries and capping
+// the depth like the Library's own walk. A visitor returning false stops the walk.
+// Nothing proportional to the library is stored here: the scan hashes as it goes.
+template <typename Visit>
+void visitEpubPaths(const std::string& dir, const int depth, Visit& visit) {
+  if (depth > SCAN_MAX_DEPTH) return;
+  FsFile handle = Storage.open(dir.c_str());
+  if (!handle || !handle.isDirectory()) {
+    handle.close();
+    return;
+  }
+  handle.rewindDirectory();
+  char name[128];
+  bool stop = false;
+  for (FsFile entry = handle.openNextFile(); entry && !stop; entry = handle.openNextFile()) {
+    const size_t nameLen = entry.getName(name, sizeof(name));
+    const bool isDir = entry.isDirectory();
+    entry.close();
+    if (nameLen == 0 || name[0] == '.') continue;
+    if (isDir) {
+      // Reopen the parent after descending: SdFat does not promise a parent handle
+      // stays usable across a nested walk (same reason as LibraryBuilder::walk()).
+      const size_t resume = handle.position();
+      handle.close();
+      visitEpubPaths(joinSdPath(dir, name), depth + 1, visit);
+      handle = Storage.open(dir.c_str());
+      if (!handle || !handle.isDirectory() || !handle.seekSet(resume)) {
+        handle.close();
+        return;
+      }
+      continue;
+    }
+    if (nameLen <= 5 || !FsHelpers::hasEpubExtension(std::string_view(name, nameLen))) continue;
+    if (!visit(joinSdPath(dir, name))) stop = true;
+  }
+  handle.close();
 }
 
 bool hasEpubFile(const BookOrbitBookDetail& detail, BookOrbitCatalogFile& outFile) {
@@ -460,8 +514,9 @@ bool BookOrbitCatalogBrowserActivity::loadRoot(const bool allowNetwork) {
   localOnDeviceCount = collectLocalBooks("on-device", nullptr);
   localInProgressCount = collectLocalBooks("in-progress", nullptr);
 
-  RenderLock lock(*this);             // the render task draws the rows replaced here
-  startListing(sections.size() + 4);  // the server's sections, Want to read, the two local ones, Search
+  RenderLock lock(*this);  // the render task draws the rows replaced here
+  // The server's sections, Want to read, the two local ones, the device scan, Search.
+  startListing(sections.size() + 5);
   listFreedForDownload = false;
   for (auto& section : sections) {
     Entry entry;
@@ -496,6 +551,13 @@ bool BookOrbitCatalogBrowserActivity::loadRoot(const bool allowNetwork) {
   addCountBadge(inProgress, static_cast<int>(localInProgressCount));
   inProgress.sectionId = "in-progress";
   entries.push_back(std::move(inProgress));
+  // A manual reconcile: books put on the card by another BookOrbit client or by hand
+  // are not in the download index, so the catalog cannot mark them until they are
+  // hashed and matched (see scanDeviceForCatalogBooks).
+  Entry scan;
+  scan.type = EntryType::SCAN;
+  scan.title = tr(STR_BOOKORBIT_SCAN_DEVICE);
+  entries.push_back(std::move(scan));
   Entry search;
   search.type = EntryType::SEARCH;
   search.title = tr(STR_SEARCH);
@@ -546,7 +608,7 @@ size_t BookOrbitCatalogBrowserActivity::collectLocalBooks(const std::string& kin
   BookOrbitDownloadIndex::forEachExisting(
       [](const int64_t, const std::string& path, void* context) {
         auto* out = static_cast<LocalBookCollector*>(context);
-        if (*out->count >= MAX_LOCAL_ENTRIES) return;
+        if (*out->count >= maxLocalEntries()) return;
         (*out->count)++;
         if (out->sink == nullptr) return;
         Entry entry;
@@ -562,7 +624,8 @@ size_t BookOrbitCatalogBrowserActivity::collectLocalBooks(const std::string& kin
   // USB land) and the /Read folder the finished-book move uses. Flat on purpose —
   // descending would walk every folder on the card to find books that, if they came
   // from the catalog, the index already listed.
-  const auto scanDir = [&count, sink](const std::string& dirPath) {
+  const size_t limit = maxLocalEntries();
+  const auto scanDir = [&count, sink, limit](const std::string& dirPath) {
     FsFile dir = Storage.open(dirPath.c_str());
     if (!dir || !dir.isDirectory()) {
       dir.close();
@@ -572,7 +635,7 @@ size_t BookOrbitCatalogBrowserActivity::collectLocalBooks(const std::string& kin
     char name[128];
     std::string path;  // reused: one allocation for the whole directory, not per file
     FsFile file;
-    while (count < MAX_LOCAL_ENTRIES && (file = dir.openNextFile())) {
+    while (count < limit && (file = dir.openNextFile())) {
       const size_t nameLen = file.isDirectory() ? 0 : file.getName(name, sizeof(name));
       file.close();
       if (nameLen <= 5 || !FsHelpers::hasEpubExtension(std::string_view(name, nameLen))) continue;
@@ -626,6 +689,103 @@ void BookOrbitCatalogBrowserActivity::loadLocalBooks(const std::string kind) {
   if (entries.empty()) errorMessage = tr(STR_NO_ENTRIES);
   lock.unlock();
   requestUpdate();
+}
+
+void BookOrbitCatalogBrowserActivity::scanDeviceForCatalogBooks() {
+  state = BrowserState::LOADING;
+  statusMessage = tr(STR_BOOKORBIT_SCANNING_DEVICE);
+  downloadProgress = downloadTotal = 0;
+  requestUpdate(true);
+
+  // Count first so the progress bar has a total, then walk again and hash as we go:
+  // neither pass keeps a path list, so a large library costs a fixed amount of RAM.
+  size_t total = 0;
+  auto countVisit = [&total](const std::string&) {
+    total++;
+    return true;
+  };
+  visitEpubPaths("/", 0, countVisit);
+  downloadTotal = total;
+
+  bool cancelRequested = false;
+  const auto pollCancel = [this, &cancelRequested] {
+    if (cancelRequested) return true;
+    mappedInput.update();
+    if (mappedInput.wasHomeGesture() || mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      cancelRequested = true;
+    }
+    return cancelRequested;
+  };
+
+  std::vector<std::string> batchHashes;
+  std::vector<std::string> batchPaths;
+  size_t processed = 0;
+  size_t hashed = 0;
+  size_t linked = 0;
+  bool failed = false;
+
+  // Sends the hashes gathered so far and records every book the server recognised.
+  const auto flushBatch = [&]() {
+    if (batchHashes.empty()) return true;
+    std::vector<BookOrbitHashMatch> matches;
+    const auto result = BookOrbitSyncClient::matchCheck(batchHashes, SETTINGS.getEffectiveDeviceName(), matches);
+    if (result != BookOrbitSyncClient::OK) {
+      LOG_ERR("BookOrbit", "Device scan match check failed (%d)", static_cast<int>(result));
+      return false;
+    }
+    for (const auto& match : matches) {
+      const auto it = std::find(batchHashes.begin(), batchHashes.end(), match.hash);
+      if (it == batchHashes.end()) continue;
+      BookOrbitDownloadIndex::record(match.bookId, batchPaths[static_cast<size_t>(it - batchHashes.begin())]);
+      linked++;
+    }
+    batchHashes.clear();
+    batchPaths.clear();
+    return true;
+  };
+
+  auto hashVisit = [&](const std::string& path) {
+    if (pollCancel() || failed) return false;
+    downloadProgress = ++processed;
+    if (processed % 16 == 0) requestUpdate(true);
+    // Already known: downloaded or matched here before. Its file is verified on use.
+    if (BookOrbitDownloadIndex::hasPath(path)) return true;
+
+    const std::string hash = KOReaderDocumentId::calculate(path);
+    if (hash.empty()) return true;
+    hashed++;
+    batchHashes.push_back(hash);
+    batchPaths.push_back(path);
+    if (batchHashes.size() >= SCAN_MATCH_BATCH && !flushBatch()) failed = true;
+    return !failed;
+  };
+  visitEpubPaths("/", 0, hashVisit);
+  if (!failed && !cancelRequested) flushBatch();
+  // Do not leave the scan's bar on the next ordinary loading screen.
+  downloadProgress = downloadTotal = 0;
+
+  if (failed) {
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_BOOKORBIT_CATALOG_ERROR);
+    requestUpdate();
+    return;
+  }
+  if (cancelRequested) {
+    if (!loadRoot(/*allowNetwork=*/false)) requestUpdate();
+    return;
+  }
+
+  char resultText[96];
+  snprintf(resultText, sizeof(resultText), tr(STR_BOOKORBIT_SCAN_RESULT), linked);
+  LOG_INF("BookOrbit", "Device scan linked %u books (hashed %u of %u EPUBs)", (unsigned)linked, (unsigned)hashed,
+          (unsigned)total);
+  state = BrowserState::BROWSING;
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_BOOKORBIT_SCAN_DONE), resultText),
+      [this](const ActivityResult&) {
+        if (!loadRoot(/*allowNetwork=*/false)) requestUpdate();
+      });
 }
 
 bool BookOrbitCatalogBrowserActivity::loadFacetEntries(const std::string& sectionId, const std::string& title,
@@ -1493,6 +1653,9 @@ void BookOrbitCatalogBrowserActivity::activateSelected() {
       openBookListing(query, titleWithoutBadge(entry), /*fromFacet=*/true);
       break;
     }
+    case EntryType::SCAN:
+      scanDeviceForCatalogBooks();
+      break;
     case EntryType::SEARCH:
       launchSearch();
       break;
@@ -1953,7 +2116,13 @@ void BookOrbitCatalogBrowserActivity::render(RenderLock&&) {
   // WIFI_SELECTION: the Wi-Fi screen is only pushed on the next loop, and a network
   // boot paints the catalog before that, with no listing loaded yet.
   if (state == BrowserState::CHECK_WIFI || state == BrowserState::LOADING || state == BrowserState::WIFI_SELECTION) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, statusMessage.c_str());
+    const int messageY = downloadTotal > 0 ? pageHeight / 2 - 20 : pageHeight / 2;
+    renderer.drawCenteredText(UI_10_FONT_ID, messageY, statusMessage.c_str());
+    // The device scan reports its hashing progress here; ordinary loads leave both at 0.
+    if (downloadTotal > 0) {
+      GUI.drawProgressBar(renderer, Rect{50, pageHeight / 2 + 20, pageWidth - 100, 20}, downloadProgress,
+                          downloadTotal);
+    }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();

@@ -7,6 +7,13 @@
 #include "BookOrbitStatsQueue.h"
 #include "KOReaderSyncClient.h"
 
+/** One document hash the server recognised as a catalog book. */
+struct BookOrbitHashMatch {
+  std::string hash;  // the KOReader partial-MD5 sent in the request
+  int64_t bookId = 0;
+  int64_t bookFileId = 0;
+};
+
 /**
  * HTTP client for BookOrbit's KOReader-compatible sync API.
  *
@@ -139,6 +146,26 @@ class BookOrbitSyncClient {
    */
   static Error completeSweep(const std::string& deviceModel, uint32_t booksMatched, uint32_t pageStatsUploaded,
                              uint32_t annotationsUpserted);
+
+  /**
+   * Ask the server which catalog books some local files are (POST /plugin/match-check),
+   * the same call BookOrbit's own KOReader plugin makes while sweeping a library.
+   *
+   * The server resolves each hash against the catalog's stored file hashes and its
+   * history, so this recognises books however they arrived on the card, including
+   * copies made by another BookOrbit client and files renamed or moved by hand.
+   * Hashes are KOReader partial-MD5 hex strings (see KOReaderDocumentId::calculate);
+   * the server accepts up to 500 per request, and the caller should keep batches much
+   * smaller so the request fits beside the TLS session on this hardware.
+   *
+   * @param hashes The document hashes to resolve (1..500)
+   * @param deviceModel Human-readable device name reported alongside the check
+   * @param outMatches Receives one entry per recognised hash; unrecognised hashes are
+   *                   simply absent
+   * @return OK on success, error code on failure
+   */
+  static Error matchCheck(const std::vector<std::string>& hashes, const std::string& deviceModel,
+                          std::vector<BookOrbitHashMatch>& outMatches);
 
   /**
    * Whether the server takes `sidecarState` on the highlight and bookmark exchanges: the

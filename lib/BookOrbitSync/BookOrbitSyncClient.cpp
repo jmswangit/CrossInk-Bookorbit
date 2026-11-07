@@ -830,6 +830,91 @@ BookOrbitSyncClient::Error BookOrbitSyncClient::completeSweep(const std::string&
 #endif
 }
 
+BookOrbitSyncClient::Error BookOrbitSyncClient::matchCheck(const std::vector<std::string>& hashes,
+                                                           const std::string& deviceModel,
+                                                           std::vector<BookOrbitHashMatch>& outMatches) {
+  lastHttpCode = 0;
+  lastTransportError = 0;
+  outMatches.clear();
+  if (!BOOKORBIT_STORE.hasCredentials()) {
+    LOG_DBG("BookOrbit", "No credentials configured");
+    return NO_CREDENTIALS;
+  }
+  if (hashes.empty()) return OK;
+
+  const std::string url = BOOKORBIT_STORE.getBaseUrl() + "/plugin/match-check";
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t heapFloor = requiredHeapFloor();
+  if (freeHeap < heapFloor) {
+    LOG_ERR("BookOrbit", "Insufficient heap for match check: %u bytes free (need %u)", (unsigned)freeHeap,
+            (unsigned)heapFloor);
+    return LOW_MEMORY;
+  }
+
+  JsonBody body;
+  {
+    JsonDocument doc;
+    doc["deviceId"] = deviceId();
+    doc["deviceModel"] = deviceModel;
+    doc["pluginVersion"] = "crossink-bo-1";
+    JsonArray hashArray = doc["hashes"].to<JsonArray>();
+    for (const std::string& hash : hashes) hashArray.add(hash);
+    if (!body.build(doc)) return LOW_MEMORY;
+  }
+
+#ifdef SIMULATOR
+  HTTPClient http;
+  std::unique_ptr<WiFiClientSecure> secureClient;
+  WiFiClient plainClient;
+
+  if (isHttpsUrl(url)) {
+    secureClient.reset(new WiFiClientSecure);
+    secureClient->setInsecure();
+    http.begin(*secureClient, url.c_str());
+  } else {
+    http.begin(plainClient, url.c_str());
+  }
+  addAuthHeaders(http);
+  http.addHeader("Content-Type", "application/json");
+
+  const int httpCode = http.POST(body.c_str());
+  std::string response = (httpCode >= 200 && httpCode < 300) ? http.getString().c_str() : "";
+  http.end();
+  lastHttpCode = httpCode;
+  lastTransportError = (httpCode < 0) ? httpCode : 0;
+#else
+  std::string response;
+  const int httpCode = sendBookOrbitRequest("POST", url, &body, response);
+  lastHttpCode = httpCode > 0 ? httpCode : 0;
+  lastTransportError = httpCode < 0 ? httpCode : 0;
+#endif
+  body.release();
+
+  LOG_DBG("BookOrbit", "Match check response: %d (hashes=%u)", httpCode, (unsigned)hashes.size());
+  if (httpCode < 0) return transportFailure();
+  if (httpCode == 401) return AUTH_FAILED;
+  if (httpCode < 200 || httpCode >= 300) return SERVER_ERROR;
+
+  JsonDocument filter;
+  filter["matches"][0]["hash"] = true;
+  filter["matches"][0]["bookId"] = true;
+  filter["matches"][0]["bookFileId"] = true;
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, response, DeserializationOption::Filter(filter));
+  if (error) {
+    logJsonParseFailure("Match check", error, response.c_str());
+    return JSON_ERROR;
+  }
+  for (JsonObjectConst item : doc["matches"].as<JsonArrayConst>()) {
+    BookOrbitHashMatch match;
+    match.hash = std::string(item["hash"] | "");
+    match.bookId = item["bookId"] | 0;
+    match.bookFileId = item["bookFileId"] | 0;
+    if (!match.hash.empty() && match.bookId != 0) outMatches.push_back(std::move(match));
+  }
+  return OK;
+}
+
 bool BookOrbitSyncClient::acceptsSidecarState() {
   if (s_sidecarStateAnswer != CapabilityAnswer::Unknown) return s_sidecarStateAnswer == CapabilityAnswer::Yes;
   lastHttpCode = 0;

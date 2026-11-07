@@ -29,7 +29,7 @@ class OptionPopup;
 class BookOrbitCatalogBrowserActivity final : public Activity {
  public:
   enum class BrowserState { CHECK_WIFI, WIFI_SELECTION, LOADING, BROWSING, DOWNLOADING, ERROR, SEARCH_INPUT };
-  enum class EntryType { SECTION, FACET_SECTION, FACET, LOCAL_SECTION, LOCAL_BOOK, SEARCH, BOOK };
+  enum class EntryType { SECTION, FACET_SECTION, FACET, LOCAL_SECTION, LOCAL_BOOK, SEARCH, SCAN, BOOK };
   // Which listing the BROWSING state currently shows; drives Back navigation.
   enum class NavLevel { Root, FacetList, Books };
 
@@ -223,6 +223,10 @@ class BookOrbitCatalogBrowserActivity final : public Activity {
   void reloadListing(const BookOrbitBookQuery& query);
   std::string headerTitle() const;
   void openLocalBook(const std::string& path);
+  // Links files already on the card to their catalog books: walk the EPUBs, hash the
+  // ones the download index does not know, then ask the server which books they are
+  // (see BookOrbitSyncClient::matchCheck) and record the matches in the index.
+  void scanDeviceForCatalogBooks();
   void showBookActionMenu(bool ignoreInitialConfirmRelease);
   void promptDeleteBook(int row);
   void navigateBack();
