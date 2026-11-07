@@ -1354,7 +1354,7 @@ void BookOrbitHomeUi::drawShelf(const Rect& tile, const char* title, const freei
     if ((onCardMask & (1u << i)) != 0) {
       constexpr int markSize = 25;
       const int markX = slot.x + slot.width - markSize - 3;
-      const int markY = slot.y + 3;
+      const int markY = slot.y + slot.height - markSize - 3;
       renderer.fillRoundedRect(markX, markY, markSize, markSize, markSize / 2, Color::White);
       renderer.drawRoundedRect(markX, markY, markSize, markSize, 1, markSize / 2, true);
       // A card, not a check: this badge means the book is already on the SD card, not
